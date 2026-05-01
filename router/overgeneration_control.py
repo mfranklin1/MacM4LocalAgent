@@ -74,13 +74,22 @@ LOCAL_FIXUP_NUDGE = (
 # Models we treat as "local" for the purposes of these controls.
 # Includes both the alias names and common upstream id prefixes that
 # LiteLLM might pass through. Claude-anything is excluded.
+#
+# `local-agent` (and the `ollama_chat/` prefix it uses) is intentionally
+# included: even though the agent model emits structured tool_calls
+# (where output is bounded by the tool argument shape), we still want
+# the static guardrail to keep a sane max_tokens cap and the stop
+# sequence in case the model falls back to prose+code in chat mode.
 LOCAL_MODEL_TOKENS = (
     "local-fast",
     "local-long",
+    "local-agent",
     "ollama/",
+    "ollama_chat/",
     "openai/mlx-",
     "mlx-community/",
     "qwen3-coder-next",
+    "llama3.1",
 )
 
 

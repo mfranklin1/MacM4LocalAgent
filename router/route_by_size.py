@@ -86,6 +86,71 @@ ENABLE_MULTI_TURN_TIGHTEN = _control_flag("OVERGEN_MULTI_TURN", "1")
 OVERGEN_TRACE = _control_flag("OVERGEN_TRACE", "0")
 _TRACE_PATH = REPO_ROOT / ".logs" / "overgen-trace.log"
 
+# When CLINE_TRACE=1, dump every inbound /v1/chat/completions request body
+# (BEFORE any routing or control mutation) to a per-request JSON file under
+# .logs/cline-dumps/. Bounded by CLINE_TRACE_MAX so an idle Cline session
+# can't fill the disk. Used to investigate why Cline-style agent requests
+# misbehave on small local models (e.g. tool-call confusion).
+#
+# REMOVE OR DISABLE AFTER INVESTIGATION -- these dumps contain the full
+# system prompt + messages + tool definitions, which can be sensitive.
+CLINE_TRACE = _control_flag("CLINE_TRACE", "0")
+# Read from real env first, then detected.env (same precedence as _control_flag).
+CLINE_TRACE_MAX = int(
+    os.environ.get("CLINE_TRACE_MAX")
+    or _ENV.get("CLINE_TRACE_MAX")
+    or "20"
+)
+_CLINE_DUMP_DIR = REPO_ROOT / ".logs" / "cline-dumps"
+_cline_dump_count = 0  # process-local; resets on proxy restart
+
+
+# Keys we know LiteLLM injects that contain circular refs or arbitrary
+# Python objects (like internal callback handles). We project the request
+# down to only the OpenAI-API-shaped fields that matter for analysis.
+_DUMP_KEEP_KEYS = (
+    "model",
+    "messages",
+    "tools",
+    "tool_choice",
+    "temperature",
+    "top_p",
+    "max_tokens",
+    "stop",
+    "stream",
+    "response_format",
+    "user",
+    "n",
+    "presence_penalty",
+    "frequency_penalty",
+    "seed",
+)
+
+
+def _dump_full_request(data: dict[str, Any]) -> None:
+    """Best-effort dump of the inbound request to .logs/cline-dumps/.
+
+    Bounded by CLINE_TRACE_MAX. Never raises -- a dumper that crashes
+    requests is worse than no dumper at all.
+
+    We project `data` down to OpenAI-API-shaped fields only; LiteLLM
+    augments the dict with internal handles (callbacks, deployment
+    objects) that contain circular references and aren't JSON-serializable.
+    """
+    global _cline_dump_count
+    try:
+        if _cline_dump_count >= CLINE_TRACE_MAX:
+            return
+        _CLINE_DUMP_DIR.mkdir(parents=True, exist_ok=True)
+        ts = int(time.time() * 1000)
+        path = _CLINE_DUMP_DIR / f"req-{ts}-{_cline_dump_count:03d}.json"
+        projected = {k: data[k] for k in _DUMP_KEEP_KEYS if k in data}
+        # default=str catches any stragglers (e.g. enum values).
+        path.write_text(json.dumps(projected, indent=2, default=str))
+        _cline_dump_count += 1
+    except Exception as e:  # pragma: no cover -- diagnostic during investigation
+        print(f"[router] cline-dumper failed: {type(e).__name__}: {e}", file=sys.stderr)
+
 
 def _trace_overgen(**kw: Any) -> None:
     """Best-effort one-line append for live observation. Never raises."""
@@ -190,7 +255,29 @@ class SizeBasedRouter(_LiteLLMCustomLogger):
         call_type: str,
     ) -> dict[str, Any] | None:
         try:
+            # FIRST: optional full-request dump for investigations. Runs
+            # before any of our routing or control mutation so the dump
+            # is exactly what the client sent.
+            if CLINE_TRACE:
+                _dump_full_request(data)
+
             requested = data.get("model", "")
+            # Cursor's "Verify" button rejects non-OpenAI-shaped names, so the
+            # YAML config exposes mirror aliases prefixed with `gpt-`. Strip
+            # that prefix here so downstream routing/decision logic sees the
+            # canonical name (`hybrid-auto`, `local-long`, etc.) and behaves
+            # identically regardless of which alias the client used.
+            if requested.startswith("gpt-") and requested[len("gpt-"):] in (
+                "hybrid-auto",
+                "local-fast",
+                "local-long",
+                "local-agent",
+                "claude-code",
+            ):
+                canonical = requested[len("gpt-"):]
+                data["model"] = canonical
+                requested = canonical
+
             if requested == "hybrid-auto":
                 model, reason, tokens = decide_tier(data.get("messages"))
                 data["model"] = model

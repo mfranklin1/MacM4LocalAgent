@@ -17,6 +17,36 @@ model_list:
       input_cost_per_token: 0.0
       output_cost_per_token: 0.0
 
+  # Tool-capable agent model. Pull beforehand: `ollama pull llama3.1:8b-instruct-q8_0`.
+  # Unlike local-long (qwen3-coder-next), llama3.1 reliably emits the
+  # <tool_call>...</tool_call> envelope that Ollama's OpenAI-compat layer
+  # parses into structured `tool_calls`, so Cursor's agent UI renders
+  # progress correctly instead of showing raw JSON in the chat.
+  - model_name: local-agent
+    litellm_params:
+      model: ollama_chat/llama3.1:8b-instruct-q8_0
+      api_base: http://127.0.0.1:@@OLLAMA_PORT@@
+      input_cost_per_token: 0.0
+      output_cost_per_token: 0.0
+
+  # Qwen2.5-Coder candidates for harness comparison (e.g. Cline replay
+  # benchmark). Pull beforehand:
+  #   ollama pull qwen2.5-coder:14b
+  #   ollama pull qwen2.5-coder:32b
+  - model_name: local-coder-14b
+    litellm_params:
+      model: ollama_chat/qwen2.5-coder:14b
+      api_base: http://127.0.0.1:@@OLLAMA_PORT@@
+      input_cost_per_token: 0.0
+      output_cost_per_token: 0.0
+
+  - model_name: local-coder-32b
+    litellm_params:
+      model: ollama_chat/qwen2.5-coder:32b
+      api_base: http://127.0.0.1:@@OLLAMA_PORT@@
+      input_cost_per_token: 0.0
+      output_cost_per_token: 0.0
+
   - model_name: claude-code
     litellm_params:
       model: anthropic/claude-sonnet-4-6
@@ -29,6 +59,66 @@ model_list:
     # Magic alias: the size-based router rewrites `data["model"]` to one of
     # the three real groups above before LiteLLM dispatches upstream, so the
     # upstream params here are never actually used. We keep them harmless.
+    litellm_params:
+      model: openai/@@MLX_REPO@@
+      api_base: http://127.0.0.1:@@MLX_PORT@@/v1
+      api_key: not-needed
+
+  # ----------------------------------------------------------------------
+  # gpt-* aliases for Cursor
+  # ----------------------------------------------------------------------
+  # Cursor's "Verify" button validates the model name client-side against
+  # a regex that only accepts OpenAI-shaped ids (gpt-*, o1-*, o3-*, etc.).
+  # Custom names like `local-agent` or `hybrid-auto` are rejected before
+  # any network call is made. The aliases below give Cursor an OpenAI-
+  # shaped name pointing at the same upstream model. The `route_by_size`
+  # callback maps `gpt-hybrid-auto` -> the size-based decision, and the
+  # over-generation controls treat `gpt-local-*` as local. From scripts
+  # / CLI / benches, keep using the short names (`local-agent`, etc.).
+  - model_name: gpt-local-fast
+    litellm_params:
+      model: openai/@@MLX_REPO@@
+      api_base: http://127.0.0.1:@@MLX_PORT@@/v1
+      api_key: not-needed
+      input_cost_per_token: 0.0
+      output_cost_per_token: 0.0
+
+  - model_name: gpt-local-long
+    litellm_params:
+      model: ollama/@@OLLAMA_TAG@@
+      api_base: http://127.0.0.1:@@OLLAMA_PORT@@
+      input_cost_per_token: 0.0
+      output_cost_per_token: 0.0
+
+  - model_name: gpt-local-agent
+    litellm_params:
+      model: ollama_chat/llama3.1:8b-instruct-q8_0
+      api_base: http://127.0.0.1:@@OLLAMA_PORT@@
+      input_cost_per_token: 0.0
+      output_cost_per_token: 0.0
+
+  - model_name: gpt-local-coder-14b
+    litellm_params:
+      model: ollama_chat/qwen2.5-coder:14b
+      api_base: http://127.0.0.1:@@OLLAMA_PORT@@
+      input_cost_per_token: 0.0
+      output_cost_per_token: 0.0
+
+  - model_name: gpt-local-coder-32b
+    litellm_params:
+      model: ollama_chat/qwen2.5-coder:32b
+      api_base: http://127.0.0.1:@@OLLAMA_PORT@@
+      input_cost_per_token: 0.0
+      output_cost_per_token: 0.0
+
+  - model_name: gpt-claude-code
+    litellm_params:
+      model: anthropic/claude-sonnet-4-6
+      api_key: os.environ/ANTHROPIC_API_KEY
+      input_cost_per_token: 0.000003
+      output_cost_per_token: 0.000015
+
+  - model_name: gpt-hybrid-auto
     litellm_params:
       model: openai/@@MLX_REPO@@
       api_base: http://127.0.0.1:@@MLX_PORT@@/v1

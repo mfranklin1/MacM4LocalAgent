@@ -40,6 +40,15 @@ from router.overgeneration_control import (
         ("hybrid-auto",                                 False),
         ("",                                            False),
         (None,                                          False),
+        # Cursor-friendly `gpt-` prefixed aliases route to the same
+        # upstream models, so the over-gen controls must still
+        # classify them by their canonical local/remote nature even
+        # if the route_by_size hook hasn't stripped the prefix yet.
+        ("gpt-local-fast",                              True),
+        ("gpt-local-long",                              True),
+        ("gpt-local-agent",                             True),
+        ("gpt-claude-code",                             False),
+        ("gpt-hybrid-auto",                             False),
     ],
 )
 def test_is_local_classification(model: Any, expected: bool) -> None:

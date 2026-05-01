@@ -1,5 +1,102 @@
 # Runbook — Cursor IDE setup against your local hybrid stack
 
+> ## STOP — Cursor 3.1.17 architectural finding (May 2026)
+>
+> If you are reading this hoping to drive a **local model from Cursor's
+> Agent mode**, please read this section first — the rest of the runbook
+> documents what we tried and why it doesn't work in Cursor 3.1.17.
+> **For Agent-mode-with-local-models, see `RUNBOOK-cline-setup.md`
+> instead.**
+>
+> ### What we discovered
+>
+> Cursor's "Override OpenAI Base URL" / BYOK provider does **not** make
+> requests from your Mac. Per the [Cursor docs](https://cursor.com/help/models-and-usage/api-keys.md):
+>
+> > "All requests are routed through Cursor's servers for final prompt building."
+>
+> Your laptop sends the prompt + your Base URL + your key to
+> `api2.cursor.sh`. Cursor's cloud backend then makes the outbound HTTPS
+> request to the Base URL you provided. **That cloud backend has SSRF
+> protection** that rejects any destination in:
+>
+> - `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` (RFC 1918)
+> - `127.0.0.0/8` (loopback)
+> - `169.254.0.0/16` (link-local)
+> - **`100.64.0.0/10` (CGNAT) — the Tailscale range, blocked**
+>
+> When you click "Verify" and Cursor reports **"Access to private
+> networks is forbidden"** or **"Provider returned error: Access to
+> private networks is forbidden"**, that is Cursor's *cloud backend*
+> rejecting the destination IP. Tailscale, despite assigning addresses
+> in CGNAT space (which is *not* RFC 1918), is treated identically by
+> Cursor's filter.
+>
+> ### Implications
+>
+> 1. **`http://127.0.0.1:4000/v1` and `http://100.68.238.46:4000/v1`
+>    both fail in Cursor.** They look private to Cursor's backend.
+>    Tailscale gives your devices private connectivity, but Cursor's
+>    backend isn't on your tailnet.
+> 2. The only Cursor-supported workaround is a **public hostname**
+>    fronting LiteLLM: cloudflared (named or quick tunnel), Tailscale
+>    Funnel, ngrok, or your own VPS reverse proxy. Even then, only
+>    chat / composer mode works — see (3).
+> 3. Per the same docs: *"Custom API keys only work with chat models."*
+>    **Cursor 3.1.x Agent mode does not pass tool-call deltas through
+>    BYOK providers** — it is locked to first-party models (Cursor
+>    Composer, GPT-5, Claude 4.x, Gemini 3.x, Grok). There is no
+>    documented way to make a BYOK provider drive Cursor's agent
+>    harness with rendered StrReplace / Read / Shell steps.
+> 4. Forum reports also document that Cursor's settings UI silently
+>    discards a Base URL that is typed but never **Verified**. Always
+>    expect to click Verify (and see green) before Save.
+>
+> ### What this means for your setup here
+>
+> - The LiteLLM proxy at `http://127.0.0.1:4000/v1` **is the right
+>   thing for benchmarks, scripts, the cursor-loop simulator, and any
+>   other client that talks to it directly from your Mac.** Those
+>   tools all work.
+> - For an Agent-mode-with-local-model experience, use **Cline (an
+>   extension that installs cleanly into Cursor)** instead. Cline's
+>   requests are made directly from the IDE's extension host on your
+>   laptop to your proxy via loopback — no cloud SSRF gateway, no
+>   Tailscale, no public hostname required. See
+>   `docs/RUNBOOK-cline-setup.md`.
+> - Sections 3.x below document a Cursor BYOK setup that we now know
+>   only works for **chat / composer mode** through a **public**
+>   hostname (cloudflared etc.). They are kept for completeness but
+>   tagged with a warning where the architecture matters.
+>
+> ### Tailscale is no longer in this story
+>
+> Earlier iterations of this runbook (and `RUNBOOK-cline-setup.md`)
+> recommended pointing clients at a Tailscale CGNAT IP
+> (`http://100.x.y.z:4000/v1`). That was a side-effect of trying to
+> make Cursor's BYOK panel happy, which never worked anyway (Cursor
+> blocks CGNAT too). For Cline + LiteLLM, **loopback is strictly
+> better**: faster (~3 ms / call), smaller attack surface (proxy not
+> exposed to the tailnet), and no dependency on `tailscaled`. The
+> proxy now binds to `127.0.0.1` only. Tailscale itself remains
+> installed if you want it for other purposes (e.g. ssh from a
+> phone), but neither this runbook nor Cline reference it.
+>
+> ### Why this is in a "STOP" callout instead of a quiet edit
+>
+> We spent two days iterating on Tailscale, GUI / CLI installs,
+> launchd plist edits, and `gpt-` aliases on the assumption that
+> Cursor would behave like any other OpenAI-compatible client. That
+> assumption was wrong from the start. The `gpt-*` aliases are still
+> useful (Cursor's BYOK panel needs OpenAI-shaped names if you ever
+> use the cloudflared workaround for chat mode), and the Tailscale
+> install is harmless to keep around. But Cursor was never going to
+> honor a CGNAT URL or render BYOK tool calls in agent mode. Saving
+> someone else (or future-you) that detour is the goal of this
+> callout.
+
+---
+
 This runbook is **specific to your installation** on this machine. It uses the
 concrete values that `make install` wrote to `config/detected.env`.
 
@@ -52,12 +149,13 @@ grep LITELLM_MASTER_KEY config/detected.env | cut -d= -f2 | tr -d '"'
 
 ### Configuration values
 
-| Field              | Value                                                  |
-| ------------------ | ------------------------------------------------------ |
-| LiteLLM proxy URL  | `http://127.0.0.1:4000/v1`                             |
-| LiteLLM master key | `sk-litellm-REDACTED-PRE-ROTATION`          |
-| Anthropic key      | Set in `launchctl setenv ANTHROPIC_API_KEY`            |
-| Cursor rule file   | `.cursor/rules/hybrid-routing.mdc` (auto-loaded)       |
+| Field                       | Value                                                  |
+| --------------------------- | ------------------------------------------------------ |
+| LiteLLM proxy URL (local)   | `http://127.0.0.1:4000/v1` (CLI / scripts only)        |
+| LiteLLM proxy URL (Cursor)  | `http://<tailscale-ip>:4000/v1` — Cursor blocks RFC1918, see §3.2 |
+| LiteLLM master key          | `sk-litellm-REDACTED-PRE-ROTATION`          |
+| Anthropic key               | Set in `launchctl setenv ANTHROPIC_API_KEY`            |
+| Cursor rule file            | `.cursor/rules/hybrid-routing.mdc` (auto-loaded)       |
 
 ---
 
@@ -190,54 +288,101 @@ build):
 4. Click **Verify** / **Test Connection**. You should see a green check.
 
 > **If Verify returns "Access to private networks is forbidden"** —
-> this is a Cursor security guard (added late 2025) that blocks custom
-> OpenAI base URLs pointing at loopback / RFC1918 addresses. Cursor
-> resolves the hostname before checking, so swapping `127.0.0.1` for
-> `localhost` or `localtest.me` won't help.
+> see the **STOP** callout at the top of this file. The short version:
+> Cursor's BYOK provider sends your prompt to `api2.cursor.sh`, and
+> Cursor's cloud backend (not your Mac) makes the outbound HTTPS call
+> to your Base URL. That backend has SSRF protection blocking
+> RFC 1918, loopback, and **`100.64.0.0/10` (CGNAT, the Tailscale
+> range)**. So both `127.0.0.1:4000` *and* the Tailscale IP fail
+> identically — the destination has to be a **public** hostname.
 >
-> The reliable workaround is a public tunnel that forwards back to
-> the local proxy. Quickest is `cloudflared`:
+> **`http://<tailscale-ip>:4000/v1` does NOT work in Cursor.** This
+> previously-recommended path turned out to be wrong. Tailscale is
+> still useful for everything *else* (CLI scripts, benchmarks,
+> Cline / Continue / Aider running on this Mac, the cursor-loop
+> simulator) — those clients connect directly to the proxy from your
+> laptop and never traverse Cursor's SSRF gateway. But the Cursor
+> IDE's BYOK feature itself needs a public URL.
+>
+> **Working option for Cursor (chat / composer mode only): a public
+> tunnel.**
 >
 > ```bash
 > brew install cloudflared
 > cloudflared tunnel --url http://127.0.0.1:4000
 > ```
 >
-> The daemon prints a `https://*.trycloudflare.com` URL. Use that
-> URL with `/v1` appended as Cursor's Base URL. The tunnel is
-> ephemeral (no uptime guarantee, hostname changes per run), so use
-> a named Cloudflare tunnel or Tailscale Funnel for anything
-> long-lived. While the tunnel is up, the local proxy is reachable
-> from the public internet — anyone with the URL still needs the
-> `LITELLM_MASTER_KEY`, but treat this as a shared secret and tear
-> the tunnel down (`Ctrl+C`) when you're done.
+> Cloudflared prints a `https://*.trycloudflare.com` URL. Append `/v1`
+> and use that as the Cursor Base URL. The tunnel is ephemeral
+> (hostname changes per run), so for daily use either set up a named
+> Cloudflare Tunnel (stable hostname under your domain) or **Tailscale
+> Funnel** (`tailscale funnel --bg 4000`, gives you a stable
+> `*.ts.net` URL that *is* publicly resolvable but ACL-restricted).
+> While the tunnel is up the proxy is reachable from the public
+> internet — anyone with the URL still needs the
+> `LITELLM_MASTER_KEY`, but treat the URL as a shared secret.
+>
+> **Cursor Agent mode is not unlocked by any of this.** Per Cursor
+> docs, BYOK is chat-models-only; Agent mode is locked to first-party
+> models in 3.1.x. For Agent-with-local-model, use Cline (see
+> `RUNBOOK-cline-setup.md`).
 
-### 3.3 — Add the four model aliases
+### 3.3 — Add the model aliases
 
-Scroll to **Model Names**. Click **+ Add Model** four times and add exactly
-these strings (case-sensitive):
+Scroll to **Model Names**. Click **+ Add Model** five times and add
+exactly these strings (case-sensitive):
 
 ```
-local-fast
-local-long
-claude-code
-hybrid-auto
+gpt-local-fast
+gpt-local-long
+gpt-local-agent
+gpt-claude-code
+gpt-hybrid-auto
 ```
 
-`hybrid-auto` is the one to use day-to-day.
+> **Why the `gpt-` prefix?** Cursor's "Verify" / "Test connection"
+> button validates each model name client-side against a regex of
+> OpenAI-shaped ids (`gpt-*`, `o1-*`, `o3-*`, …). Custom names like
+> `local-agent` are rejected with **"Model name is not valid"** before
+> any HTTP call is made, even though chat completions would work fine.
+> The `config/litellm-config.rendered.yaml` defines five mirror aliases
+> with a `gpt-` prefix; the proxy's router transparently strips the
+> prefix on every request, so behavior is identical to the canonical
+> name. From CLI / scripts / benches, keep using the unprefixed names
+> (`local-agent`, `hybrid-auto`, etc.).
+
+**Day-to-day choice: `gpt-hybrid-auto`** — the size-based router picks
+local-fast, local-long, or claude-code automatically based on prompt
+size + complexity.
+
+**`gpt-local-agent` is special** — it points at
+`llama3.1:8b-instruct-q8_0`, the local model we verified reliably
+emits structured `tool_calls[]` through Ollama. Use it when you want
+Cursor's **Agent mode** to render human-readable tool steps
+(StrReplace, Read, Shell, etc.) instead of showing raw JSON in chat.
+`gpt-local-long` is more capable on long-context coding but its
+Qwen3-Coder-Next backing model only emits tool calls as fenced text,
+which Cursor cannot parse into agent-step UI.
 
 ### 3.4 — Pick a default
 
-In the model picker (top of the chat / composer), select **`hybrid-auto`**
-as your default.
+In the model picker (top of the chat / composer), select
+**`gpt-hybrid-auto`** as your default.
 
 ### 3.5 — Verify from Cursor
 
 1. Open the Cursor chat panel.
-2. Pick `hybrid-auto`.
+2. Pick `gpt-hybrid-auto`.
 3. Ask: `[claude] Reply with just the word PONG.`
 4. You should get `PONG`.
 5. In a terminal: `make report` — you should see the request logged.
+
+> **Tip:** Cursor's "Verify" button only round-trips the *first*
+> model in your **Model Names** list. As long as that one is one of
+> the five `gpt-…` aliases above, Verify will succeed. If you typed
+> a non-OpenAI-shaped name (e.g. `local-agent` without the `gpt-`
+> prefix), Cursor rejects it client-side with **"Model name is not
+> valid"** before sending anything to the proxy.
 
 ### Cursor Agent mode caveat
 

@@ -142,6 +142,63 @@ def test_pre_call_does_not_touch_explicit_model(router: SizeBasedRouter) -> None
     assert "metadata" not in new or "route_decision" not in new.get("metadata", {})
 
 
+# ---- gpt-* prefix strip (Cursor-friendly aliases) ----------------------------
+
+@pytest.mark.parametrize(
+    "incoming,expected_canonical",
+    [
+        ("gpt-local-fast",   "local-fast"),
+        ("gpt-local-long",   "local-long"),
+        ("gpt-local-agent",  "local-agent"),
+        ("gpt-claude-code",  "claude-code"),
+    ],
+)
+def test_pre_call_strips_gpt_prefix_for_explicit_aliases(
+    router: SizeBasedRouter, incoming: str, expected_canonical: str
+) -> None:
+    """Cursor sends the OpenAI-shaped alias name; the router must rewrite
+    it to the canonical name so cost-tier classification, the over-gen
+    controls, and any downstream logic see the model they expect."""
+    data: dict[str, Any] = {
+        "model": incoming,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    new = asyncio.run(router.async_pre_call_hook(None, None, data, "completion"))
+    assert new is not None
+    assert new["model"] == expected_canonical
+
+
+def test_pre_call_strips_gpt_prefix_then_rewrites_hybrid_auto(
+    router: SizeBasedRouter,
+) -> None:
+    """gpt-hybrid-auto must collapse to hybrid-auto AND then trigger the
+    size-based rewrite, exactly like the canonical alias does."""
+    data: dict[str, Any] = {
+        "model": "gpt-hybrid-auto",
+        "messages": [{"role": "user", "content": "tiny prompt"}],
+    }
+    new = asyncio.run(router.async_pre_call_hook(None, None, data, "completion"))
+    assert new is not None
+    assert new["model"] in {"local-fast", "local-long", "claude-code"}
+    meta = new["metadata"]
+    assert meta["route_decision"] == new["model"]
+    assert isinstance(meta["route_reason"], str)
+    assert meta["route_tokens_estimated"] >= 1
+
+
+def test_pre_call_does_not_strip_unknown_gpt_prefix(
+    router: SizeBasedRouter,
+) -> None:
+    """A real OpenAI model name like `gpt-4o` should pass through
+    untouched -- the strip is whitelisted to our specific aliases."""
+    data: dict[str, Any] = {
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    new = asyncio.run(router.async_pre_call_hook(None, None, data, "completion"))
+    assert new["model"] == "gpt-4o"
+
+
 class _FakeUsage:
     def __init__(self, in_tok: int, out_tok: int) -> None:
         self.prompt_tokens = in_tok
