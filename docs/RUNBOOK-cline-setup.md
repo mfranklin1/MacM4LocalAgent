@@ -77,8 +77,14 @@ panel.
    | --- | --- |
    | API Provider | **OpenAI Compatible** |
    | Base URL | `http://127.0.0.1:4000/v1` |
-   | API Key | `sk-litellm-REDACTED-PRE-ROTATION` |
+   | API Key | the value of `LITELLM_MASTER_KEY` from `config/detected.env` (see snippet below) |
    | Model ID | `gpt-local-long` *(see model-selection note below)* |
+
+   To copy the current key to the clipboard:
+
+   ```bash
+   grep LITELLM_MASTER_KEY config/detected.env | cut -d= -f2 | tr -d '"' | pbcopy
+   ```
 
 4. Click **Done** / **Save**.
 
