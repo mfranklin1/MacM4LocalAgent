@@ -18,11 +18,18 @@ flowchart LR
     Cline["Cline extension<br/>(inside Cursor)"] -->|"OpenAI /v1<br/>over loopback"| LiteLLM["LiteLLM :4000<br/>(127.0.0.1 only, no auth)"]
     LiteLLM -->|"≤16 k tokens"|       MLX["MLX server :8081<br/>Qwen2.5-Coder-7B-Instruct (4-bit)"]
     LiteLLM -->|"16k–64k context"|    Ollama["Ollama :11434<br/>qwen3-coder-next:q4_K_M<br/>q4_0 KV cache (~4×)"]
-    LiteLLM -->|"complex / >64k"|     Claude["Anthropic API<br/>claude-opus-4-7"]
+    LiteLLM -->|"complex / >64k<br/>(online only)"| Claude["Anthropic API<br/>claude-opus-4-7"]
+    LiteLLM -. "offline / OFFLINE=1<br/>downgrade" .-> Ollama
     LiteLLM --> DB[("cost.db")]
     DB --> CLI["make report"]
     DB --> Dash["Dashboard :4001"]
 ```
+
+> **Airplane / no-network?** The router auto-detects when
+> `api.anthropic.com:443` is unreachable and silently rewrites every
+> Claude selection to `local-long`. Force it permanently with
+> `make offline` (no proxy restart needed). Details:
+> [docs/offline-mode.md](docs/offline-mode.md).
 
 > **Why Cline, not Cursor's own Agent mode?** Cursor BYOK routes requests
 > through `api2.cursor.sh` (blocks loopback + RFC 1918 + CGNAT) and doesn't

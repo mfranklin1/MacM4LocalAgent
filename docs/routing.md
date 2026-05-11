@@ -112,6 +112,28 @@ by sampling our own LiteLLM logs.
 If you want exact counts, swap in `tiktoken` inside `_estimate_tokens` —
 the rest of the routing logic stays the same.
 
+## Offline mode
+
+When `OFFLINE=1` is set (real env or `config/detected.env`) or the
+1.5s TCP probe to `api.anthropic.com:443` fails, the router never
+returns a Claude tier — every branch that would have escalated is
+rewritten to `local-long` and stamped with `route_reason="offline-downgrade: ..."`.
+This applies uniformly to:
+
+- `hybrid-auto` complexity / size escalations.
+- Explicit `[claude]` / `[opus]` / `[sonnet]` / `[haiku]` tags
+  (originally-requested tag preserved in the route reason).
+- Cline tool-result failure rescues (Python tracebacks, Rust
+  panics, JS stacks) on turn 2+.
+- Direct `claude-*` model selections that never went through
+  `decide_tier()` at all — caught by a chokepoint in
+  `async_pre_call_hook`.
+
+`OFFLINE_STRICT=1` flips the silent downgrade to a 503 for the
+"explicit Claude" cases. Toggle with `make offline` / `make online`
+/ `make offline-status`. Full runbook + Cline context-clearing
+recipe in [offline-mode.md](offline-mode.md).
+
 ## Modifying the rules
 
 - **Move the boundaries:** edit `ROUTE_FAST_MAX` / `ROUTE_LONG_MAX` in

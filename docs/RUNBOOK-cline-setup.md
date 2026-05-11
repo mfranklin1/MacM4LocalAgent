@@ -476,6 +476,37 @@ it would break those paths without helping Cline at all.
 
 ---
 
+## 8.6 Offline / airplane sessions
+
+Going offline (intentionally with `make offline`, or because wifi
+dropped) does NOT break Cline. The router auto-detects the
+condition and silently downgrades every Claude tier to `local-long`,
+so all five `gpt-*` aliases keep working — including `gpt-hybrid-auto`,
+which simply never escalates while offline.
+
+**But your context probably needs clearing.** If your earlier turns
+in the current Cline task rode Claude, the local model inherits a
+conversation history shaped by cloud-tier reasoning. It will then
+try to extend that style on a structurally different model and
+produce slightly off answers. The router prints a one-time-per-process
+stderr banner reminding you of this; the recommended response is:
+
+| Action | How |
+| --- | --- |
+| Start a fresh Cline task | `Cmd+Shift+P` → "Cline: New Task" |
+| Same, mouse | Trash icon in the Cline panel header |
+| Wipe stale tasks permanently | Cline gear → History → × on the task row |
+
+After the reset, re-paste any files you still need — the new task
+has no memory of `read_file` results from the old one. For a
+genuinely-offline workflow this is usually a feature (clean local
+workspace, no Claude residue).
+
+See [offline-mode.md](offline-mode.md) for the full decision tree,
+strict-mode behavior, and `make offline-status` introspection.
+
+---
+
 ## 9. What we lose vs. native Cursor agent mode
 
 - No Cursor "checkpoints" (Cline has its own task history but it's

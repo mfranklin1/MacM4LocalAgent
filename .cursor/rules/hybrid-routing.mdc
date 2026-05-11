@@ -62,6 +62,23 @@ Dashboard: <http://127.0.0.1:4001>. CLI: `make report`.
 - Use **local-long** for any "read-this-large-thing" task — staying local
   is free and fast on Apple Silicon with TurboQuant.
 
+## Offline mode (airplane / no-network)
+
+When `OFFLINE=1` (toggle with `make offline`) OR the auto-probe to
+`api.anthropic.com:443` fails, every Claude branch above is rewritten
+to **local-long** with `route_reason="offline-downgrade: ..."`. The
+`[claude]`/`[opus]`/`[sonnet]`/`[haiku]` tags are honored as a *hint*
+(preserved in the route reason) but the actual call stays local.
+
+- `make offline` / `make online` / `make offline-status` are the
+  toggle/inspect interface. Router re-reads `config/detected.env`
+  per call, no proxy restart needed.
+- Strict mode (`OFFLINE_STRICT=1`) flips silent downgrade into a
+  503 for explicit-Claude callers. Off by default.
+- If you go offline mid-task, **clear the Cline context** so the
+  local model doesn't inherit Claude-shaped history: `Cmd+Shift+P`
+  → "Cline: New Task". Full runbook: `docs/offline-mode.md`.
+
 ## Don't
 
 - Don't paste secrets into prompts. `local-*` keeps them on-device, but

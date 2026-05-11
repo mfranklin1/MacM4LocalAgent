@@ -12,6 +12,9 @@ first for the elevator pitch, then come back here for the details.
 1. [Architecture](architecture.md) — the big picture, components and dataflow.
 2. [Routing](routing.md) — how `hybrid-auto` decides between local-fast,
    local-long and Claude.
+3. [Offline mode](offline-mode.md) — airplane / no-network behavior,
+   `make offline`, and the recipe for clearing Cline context cleanly
+   when the network drops mid-task.
 3. [Cost model](cost-model.md) — how `actual_cost`, `shadow_cost` and savings
    are computed and stored.
 4. [Operations](operations.md) — `make` targets, `launchd` services and logs.
@@ -31,6 +34,7 @@ first for the elevator pitch, then come back here for the details.
 | Cursor setup runbook | [RUNBOOK-cursor-setup.md](RUNBOOK-cursor-setup.md) |
 | Architecture diagram | [architecture.md](architecture.md) |
 | Routing decisions    | [routing.md](routing.md)          |
+| Offline / airplane   | [offline-mode.md](offline-mode.md) |
 | Cost / savings math  | [cost-model.md](cost-model.md)    |
 | Service management   | [operations.md](operations.md)    |
 | Cursor IDE setup     | [cursor-integration.md](cursor-integration.md) |
