@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# This project is Apple Silicon + macOS specific (MLX, launchd plists,
+# scripts/00-detect.sh uses system_profiler / sysctl). All test suites
+# run on macos-latest, which is Apple Silicon since macos-14.
+jobs:
+  test:
+    name: tests (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: latest
+
+      - name: Hardware detection
+        run: make detect
+        # Writes config/detected.env. tests/test_detect.sh asserts the
+        # fields below are present; running detect here guarantees they
+        # exist on a fresh runner with no prior install state.
+
+      - name: Run full test suite
+        run: make test
+        # make test invokes tests/run.sh which runs:
+        #   1. pytest (Python unit + integration)
+        #   2. tests/test_scripts.sh (bash -n, strict-mode, makefile targets,
+        #      plist XML validity, plist placeholder presence). This already
+        #      syntax-checks scripts/install-cline.sh.
+        #   3. tests/test_detect.sh (scripts/00-detect.sh + detected.env keys)
