@@ -47,7 +47,6 @@ def _read_env(path: pathlib.Path) -> dict[str, str]:
 
 _ENV = _read_env(REPO_ROOT / "config" / "detected.env")
 LITELLM_BASE = f"http://127.0.0.1:{_ENV.get('LITELLM_PORT', '4000')}"
-MASTER_KEY = _ENV.get("LITELLM_MASTER_KEY", "sk-litellm-local")
 
 
 REPO_ROOT_FOR_PROGRESS = REPO_ROOT
@@ -78,7 +77,6 @@ def call_streaming(
     *,
     messages: list[dict[str, Any]] | None = None,
     base_url: str = LITELLM_BASE,
-    api_key: str = MASTER_KEY,
     timeout: float = 900.0,
     progress: bool = True,
     progress_every: float = 10.0,
@@ -148,7 +146,6 @@ def call_streaming(
                 "POST",
                 f"{base_url}/v1/chat/completions",
                 headers={
-                    "Authorization": f"Bearer {api_key}",
                     "Content-Type":  "application/json",
                 },
                 json=payload,
@@ -225,7 +222,6 @@ def run_arm(
     work_dir: pathlib.Path,
     attempt: int = 1,
     base_url: str = LITELLM_BASE,
-    api_key: str = MASTER_KEY,
     pytest_timeout: float = 120.0,
 ) -> dict[str, Any]:
     """End-to-end: call model, grade, persist `bench_runs` row, return summary."""
@@ -236,7 +232,7 @@ def run_arm(
         f"[{time.strftime('%H:%M:%S')}] [{model}] arm={arm} "
         f"calling LiteLLM at {base_url}"
     )
-    res = call_streaming(model, prompt, base_url=base_url, api_key=api_key)
+    res = call_streaming(model, prompt, base_url=base_url)
     response_text = res.get("output", "") if res.get("ok") else ""
 
     # Always save the raw response for offline inspection, even if grading

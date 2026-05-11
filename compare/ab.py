@@ -38,7 +38,6 @@ def _read_env(path: pathlib.Path) -> dict[str, str]:
 
 _ENV = _read_env(REPO_ROOT / "config" / "detected.env")
 LITELLM_BASE = f"http://127.0.0.1:{_ENV.get('LITELLM_PORT', '4000')}"
-MASTER_KEY = _ENV.get("LITELLM_MASTER_KEY", "sk-litellm-local")
 
 
 def _call(model: str, prompt: str, *, timeout: float = 600.0) -> dict[str, Any]:
@@ -49,7 +48,6 @@ def _call(model: str, prompt: str, *, timeout: float = 600.0) -> dict[str, Any]:
             r = client.post(
                 f"{LITELLM_BASE}/v1/chat/completions",
                 headers={
-                    "Authorization": f"Bearer {MASTER_KEY}",
                     "Content-Type": "application/json",
                 },
                 json={

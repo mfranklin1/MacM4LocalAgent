@@ -35,14 +35,6 @@ import httpx
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
-def _master_key() -> str:
-    env = REPO_ROOT / "config" / "detected.env"
-    for line in env.read_text().splitlines():
-        if line.startswith("LITELLM_MASTER_KEY="):
-            return line.split("=", 1)[1].strip().strip('"')
-    raise SystemExit("LITELLM_MASTER_KEY not found in config/detected.env")
-
-
 def _detect_tool_call(text: str) -> tuple[str | None, str | None]:
     """Return (tool_name, snippet_of_args) if the assistant text
     contains a Cline-style XML tool use, else (None, None)."""
@@ -80,7 +72,6 @@ def _replay_one(
     model: str,
     messages: list[dict[str, Any]],
     base_url: str,
-    api_key: str,
     timeout: float,
     stop: list[str] | None = None,
 ) -> dict[str, Any]:
@@ -95,7 +86,6 @@ def _replay_one(
     if stop:
         payload["stop"] = stop
     headers = {
-        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
     t0 = time.time()
@@ -198,13 +188,12 @@ def main() -> int:
         print(f"  last msg:    role={last_role}  len={last_len}")
     print()
 
-    api_key = _master_key()
     if stop_list:
         print(f"  stop:        {len(stop_list)} sequence(s) passed (e.g. {stop_list[0]!r})")
     rows: list[dict[str, Any]] = []
     for model in [m.strip() for m in args.models.split(",") if m.strip()]:
         print(f"  >>> replaying with model={model} ...", flush=True)
-        row = _replay_one(model, messages, args.base_url, api_key, args.timeout, stop=stop_list)
+        row = _replay_one(model, messages, args.base_url, args.timeout, stop=stop_list)
         rows.append(row)
         if "error" in row:
             print(f"      ERROR after {row['wall_seconds']:.2f}s: {row['error']}")

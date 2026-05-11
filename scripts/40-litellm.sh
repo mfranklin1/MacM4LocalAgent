@@ -42,7 +42,6 @@ sed -e "s|@@OLLAMA_TAG@@|$OLLAMA_TAG|g" \
     -e "s|@@MLX_REPO@@|$MLX_REPO|g" \
     -e "s|@@MLX_PORT@@|$MLX_PORT|g" \
     -e "s|@@OLLAMA_PORT@@|$OLLAMA_PORT|g" \
-    -e "s|@@LITELLM_MASTER_KEY@@|$LITELLM_MASTER_KEY|g" \
     "$TEMPLATE" > "$RENDERED"
 log "rendered config: $RENDERED"
 

@@ -19,9 +19,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$REPO_ROOT/config/detected.env"
 
 MODE="${1:-full}"
-KEY="$LITELLM_MASTER_KEY"
 URL="http://127.0.0.1:${LITELLM_PORT}/v1/chat/completions"
-HDRS=(-H "Authorization: Bearer $KEY" -H "Content-Type: application/json")
+# Proxy is loopback-only with no auth gate, so no Authorization header.
+HDRS=(-H "Content-Type: application/json")
 MAX_TOK_OUT=128
 STRESS_TOKENS="${STRESS_TOKENS:-110000}"            # near the 128k router ceiling, still routed local-long
 OVER_CEILING_TOKENS="${OVER_CEILING_TOKENS:-140000}" # above ROUTE_LONG_MAX, must route to claude-code

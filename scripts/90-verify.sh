@@ -78,8 +78,8 @@ fi
 
 echo
 echo "== LiteLLM model registry =="
-HEADERS=(-H "Authorization: Bearer $LITELLM_MASTER_KEY")
-RESP="$(curl -fsS "${HEADERS[@]}" "http://127.0.0.1:${LITELLM_PORT}/v1/models" || true)"
+# The proxy is loopback-only (127.0.0.1) with no auth gate; no bearer token needed.
+RESP="$(curl -fsS "http://127.0.0.1:${LITELLM_PORT}/v1/models" || true)"
 if [[ -n "$RESP" ]]; then
   for m in local-fast local-long claude-code hybrid-auto; do
     if echo "$RESP" | grep -q "\"$m\""; then ok "model '$m' registered"; else fail "model '$m' missing"; fi

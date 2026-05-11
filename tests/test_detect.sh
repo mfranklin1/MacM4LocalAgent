@@ -29,7 +29,7 @@ ENV_FILE="$WORK/config/detected.env"
 if [[ -f "$ENV_FILE" ]]; then
   for key in CHIP RAM_GB GPU_CORES QUANT_TIER OLLAMA_TAG KV_CACHE_TYPE \
              LOCAL_FAST_CTX LOCAL_LONG_CTX ROUTE_FAST_MAX ROUTE_LONG_MAX \
-             LITELLM_PORT MLX_PORT OLLAMA_PORT DASHBOARD_PORT LITELLM_MASTER_KEY; do
+             LITELLM_PORT MLX_PORT OLLAMA_PORT DASHBOARD_PORT; do
     if grep -q "^$key=" "$ENV_FILE"; then ok "key $key present"; else fail "key $key missing"; fi
   done
 

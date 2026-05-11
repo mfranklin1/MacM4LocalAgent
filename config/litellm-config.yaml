@@ -185,5 +185,17 @@ litellm_settings:
   database_url: "sqlite:///./cost/cost.db"
   set_verbose: false
 
-general_settings:
-  master_key: @@LITELLM_MASTER_KEY@@
+# No general_settings.master_key by design.
+#
+# The proxy is bound to 127.0.0.1 only (see scripts/run_litellm.py invocation
+# in ~/Library/LaunchAgents/com.local.litellm.plist) which is the actual
+# security boundary on a personal Mac. A bearer-token gate on top of loopback
+# adds no real protection -- anything that can connect to 127.0.0.1:4000 can
+# also read the rotated key out of config/detected.env. Dropping the gate
+# also removes the operational tax of pasting a new key into Cline / Cursor
+# BYOK every time the key rotates.
+#
+# Re-enable for any of: multi-user macOS, port-forward via Tailscale or
+# cloudflared, or LiteLLM virtual-key per-caller usage attribution. Add
+# `general_settings: { master_key: @@LITELLM_MASTER_KEY@@ }` back here and
+# restore the corresponding sed line in scripts/40-litellm.sh.

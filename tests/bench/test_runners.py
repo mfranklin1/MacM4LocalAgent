@@ -42,7 +42,7 @@ def _patch_streaming(monkeypatch: pytest.MonkeyPatch, body_chunks: list[str],
     """Replace `litellm_arm.call_streaming` with a stub returning canned data."""
     captured: dict = {}
 
-    def fake_stream(model, prompt, *, base_url="x", api_key="y", timeout=900.0):
+    def fake_stream(model, prompt, *, base_url="x", timeout=900.0):
         captured["model"] = model
         captured["prompt"] = prompt
         out = "".join(body_chunks)

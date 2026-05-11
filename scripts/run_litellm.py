@@ -8,13 +8,12 @@ Also force-inserts the repo root onto sys.path so the YAML's
 `router.route_by_size.SizeBasedRouter` callback can be imported even if
 PYTHONPATH gets stripped by the proxy startup hooks.
 
-Sources `config/detected.env` so all values defined there (notably
-`LITELLM_MASTER_KEY` and any per-host pins) are present in os.environ
-before LiteLLM resolves `os.environ/...` references in the YAML config.
-The launchd plist only injects PATH and PYTHONPATH; without this step the
-proxy would start with no master key and refuse to authenticate any
-caller -- including the one that just authored this comment, ask me how
-I know.
+Sources `config/detected.env` so any per-host pins defined there
+(e.g. OLLAMA_TAG, MLX_REPO) are present in os.environ before LiteLLM
+resolves `os.environ/...` references in the YAML config. The launchd
+plist only injects PATH and PYTHONPATH; this is how everything else
+gets in. Auth is intentionally disabled (the proxy is loopback-only),
+so there is no master-key resolution to fail on.
 """
 from __future__ import annotations
 
@@ -38,8 +37,6 @@ def _load_detected_env() -> None:
     Silently ignores a missing detected.env -- a fresh checkout that hasn't
     run `make detect` yet should still be able to import this launcher
     (e.g. from a unit test that just wants to pull in router.route_by_size).
-    The proxy itself will fail later with a clearer error when LiteLLM
-    can't resolve `os.environ/LITELLM_MASTER_KEY`.
     """
     env_path = REPO_ROOT / "config" / "detected.env"
     if not env_path.is_file():

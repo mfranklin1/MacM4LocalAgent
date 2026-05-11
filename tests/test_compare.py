@@ -80,7 +80,10 @@ def test_call_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     assert res["output_tokens"] == 8
     assert "/v1/chat/completions" in captured["url"]
     assert captured["body"]["model"] == "local-fast"
-    assert captured["auth"].startswith("Bearer ")
+    # The proxy is loopback-only with no master_key, so ab._call sends no
+    # Authorization header. If we ever re-enable auth, swap this back to
+    # `assert captured["auth"].startswith("Bearer ")`.
+    assert captured["auth"] is None
 
 
 def test_call_handles_error(monkeypatch: pytest.MonkeyPatch) -> None:
