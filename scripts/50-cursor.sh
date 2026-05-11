@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# 50-cursor.sh - Drop a Cursor rule and print the base-URL/API-key/model
-# instructions; open Cursor's settings since keys are encrypted on disk
-# and cannot be set programmatically.
+# 50-cursor.sh - Drop a Cursor rule (so any Cursor-native chat / Ask /
+# Plan-mode interactions know the routing semantics) and print the
+# Cline-integration instructions, since that's the supported way to drive
+# the proxy. Cursor BYOK (Override OpenAI Base URL) is kept for the Ask /
+# Plan-mode use case but is NOT the primary integration -- see
+# docs/RUNBOOK-cline-setup.md for the architectural explanation.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -87,30 +90,61 @@ log "wrote $RULE_DIR/hybrid-routing.mdc"
 cat <<EOF
 
 ==================================================================
-  Cursor wiring (manual one-time setup; keys are stored encrypted)
+  Cline wiring (the supported integration path)
 ==================================================================
 
-  1. Open Cursor -> Settings (Cmd+,) -> Models
+  1. Install the Cline extension into Cursor (one-time):
+
+       /Applications/Cursor.app/Contents/Resources/app/bin/cursor \\
+         --install-extension saoudrizwan.claude-dev
+
+     Then quit & relaunch Cursor so Cline's activation hooks fire.
+
+  2. Open Cursor -> click the Cline icon in the left sidebar
+     (robot / chat-bubble shape) -> gear icon -> API Configuration.
+
+  3. Fill in:
+
+       API Provider : OpenAI Compatible
+       Base URL     : http://127.0.0.1:${LITELLM_PORT}/v1
+       API Key      : any non-empty string (e.g. "not-needed")
+                      The proxy is loopback-only with no auth gate, but
+                      Cline won't save a blank key field.
+       Model ID     : gpt-hybrid-auto   (recommended; router picks tier)
+
+  4. Click Done. Try a prompt:
+
+       Read README.md and summarize it in one sentence.
+
+  5. Watch traffic:
+
+       make report        # CLI summary
+       make dashboard     # http://127.0.0.1:${DASHBOARD_PORT}
+
+  Inline routing overrides (prefix the prompt, leading-only):
+
+       [local]   force local-long  (absolute opt-out from Claude)
+       [haiku]   force claude-haiku-4-5
+       [sonnet]  force claude-sonnet-4-6
+       [opus]    force claude-opus-4-7
+       [claude]  force whichever model claude-code aliases (= opus)
+
+  Full walkthrough: docs/RUNBOOK-cline-setup.md
+
+==================================================================
+  Cursor BYOK wiring (LEGACY -- works only for Ask / Plan modes)
+==================================================================
+
+  Cursor Agent mode does NOT pass tool-call deltas through BYOK
+  providers, so this path can't drive a coding agent. It is kept for
+  the Ask / Plan-mode use case only.
+
+  1. Cursor -> Settings (Cmd+,) -> Models
   2. Toggle "Override OpenAI Base URL" ON
   3. Base URL:  http://127.0.0.1:${LITELLM_PORT}/v1
-  4. API Key:   ${LITELLM_MASTER_KEY}
-  5. Click "+ Add Model" four times and add:
-       - local-fast
-       - local-long
-       - claude-code
-       - hybrid-auto    (auto-routes based on prompt size + complexity)
-  6. Click Verify; pick your default model.
+  4. API Key:   any non-empty string (e.g. "not-needed")
+  5. Add models: local-fast, local-long, claude-code, hybrid-auto
+  6. Pick hybrid-auto as default.
 
-  NOTE: Cursor's Agent mode currently ignores custom keys
-        (Ask and Plan modes work today). The dashboard at
-        http://127.0.0.1:${DASHBOARD_PORT} will only show traffic
-        that goes through your custom models.
-
-  Trying to open Settings now...
+  See docs/RUNBOOK-cursor-setup.md for the SSRF / CGNAT background.
 EOF
-
-if [[ -d "/Applications/Cursor.app" ]]; then
-  open -a "Cursor" || true
-else
-  log "Cursor.app not found in /Applications; open it manually."
-fi
