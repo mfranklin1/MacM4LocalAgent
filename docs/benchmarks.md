@@ -35,10 +35,10 @@ flowchart TB
   C --> DB
   X --> DB
 
-  subgraph "Anchor real spend"
-    AAPI[Anthropic Admin API\n/v1/organizations/usage_report\n+ /cost_report]
-    CAPI[Cursor Admin API\n/teams/spend\n/teams/filtered-usage-events]
-    Manual[Cursor manual CSV\n(Pro accounts)]
+  subgraph Anchor["Anchor real spend"]
+    AAPI["Anthropic Admin API<br/>/v1/organizations/usage_report<br/>+ /cost_report"]
+    CAPI["Cursor Admin API<br/>/teams/spend<br/>/teams/filtered-usage-events"]
+    Manual["Cursor manual CSV<br/>(Pro accounts)"]
   end
   AAPI --> PS[(provider_spend)]
   CAPI --> PS
@@ -46,7 +46,7 @@ flowchart TB
 
   DB --> R[bench.report]
   PS --> R
-  R --> Out[3-arm table:\nquality + latency + cost\nlocal vs. billed]
+  R --> Out["3-arm table:<br/>quality + latency + cost<br/>local vs. billed"]
 ```
 
 ## The benchmark task
