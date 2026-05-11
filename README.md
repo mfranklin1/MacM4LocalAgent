@@ -19,7 +19,7 @@ flowchart LR
     LiteLLM -->|"≤16 k tokens"|       MLX["MLX server :8081<br/>Qwen2.5-Coder-7B-Instruct (4-bit)"]
     LiteLLM -->|"16k–64k context"|    Ollama["Ollama :11434<br/>qwen3-coder-next:q4_K_M<br/>q4_0 KV cache (~4×)"]
     LiteLLM -->|"complex / >64k<br/>(online only)"| Claude["Anthropic API<br/>claude-opus-4-7"]
-    LiteLLM -. "offline / OFFLINE=1<br/>downgrade" .-> Ollama
+    LiteLLM -.->|"offline / OFFLINE=1<br/>downgrade"| Ollama
     LiteLLM --> DB[("cost.db")]
     DB --> CLI["make report"]
     DB --> Dash["Dashboard :4001"]
