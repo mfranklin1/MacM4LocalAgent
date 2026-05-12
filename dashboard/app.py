@@ -302,6 +302,214 @@ def compare_one(request: Request, cmp_id: int) -> Any:
     return templates.TemplateResponse(request, "compare_one.html", {"r": r})
 
 
+# ----- M7: Rich model metadata for Cline (and other clients) --------------
+#
+# LiteLLM already exposes /v1/models, but that endpoint:
+#   - Doesn't include local vs cloud tier classification
+#   - Reports no context window
+#   - Has no warm / loaded signal
+#   - Returns Anthropic/MLX/Ollama pricing inconsistently
+#
+# /api/macm4-models is a thin JSON shape designed for Cline's
+# routing-tier badge (C7) and cost-savings sidebar (C6). Polled
+# at most once per session by the Cline fork; cheap to compute on
+# every call so we don't bother caching.
+
+# Pinned tier metadata. Values match config/litellm-config.yaml and
+# the Ollama / MLX backend Modelfiles. Update both in lockstep if
+# either side changes.
+_MACM4_TIERS = [
+    {
+        "id": "local-fast",
+        "tier": "local",
+        "backend": "mlx",
+        "backend_url": "http://127.0.0.1:8081",
+        "model_repo_env": "MLX_REPO",
+        "context_window": 16384,
+        "max_output_tokens": 6144,
+        "tokens_per_second_est": 70,
+        "pricing": {
+            "input_per_million_usd": 0.0,
+            "output_per_million_usd": 0.0,
+        },
+        "capabilities": {
+            "streaming": True,
+            "tool_use_native": False,
+            "vision": False,
+        },
+    },
+    {
+        "id": "local-long",
+        "tier": "local",
+        "backend": "ollama",
+        "backend_url": "http://127.0.0.1:11434",
+        "model_tag_env": "OLLAMA_TAG",
+        "context_window": 131072,
+        "max_output_tokens": 6144,
+        "tokens_per_second_est": 12,
+        "pricing": {
+            "input_per_million_usd": 0.0,
+            "output_per_million_usd": 0.0,
+        },
+        "capabilities": {
+            "streaming": True,
+            "tool_use_native": False,
+            "vision": False,
+        },
+    },
+    {
+        "id": "claude-haiku-4-5",
+        "tier": "cloud",
+        "backend": "anthropic",
+        "model_id": "claude-haiku-4-5",
+        "context_window": 200000,
+        "max_output_tokens": 8192,
+        "tokens_per_second_est": 80,
+        "pricing": {
+            "input_per_million_usd": 1.0,
+            "output_per_million_usd": 5.0,
+        },
+        "capabilities": {
+            "streaming": True,
+            "tool_use_native": True,
+            "vision": True,
+        },
+    },
+    {
+        "id": "claude-sonnet-4-6",
+        "tier": "cloud",
+        "backend": "anthropic",
+        "model_id": "claude-sonnet-4-6",
+        "context_window": 200000,
+        "max_output_tokens": 8192,
+        "tokens_per_second_est": 60,
+        "pricing": {
+            "input_per_million_usd": 3.0,
+            "output_per_million_usd": 15.0,
+        },
+        "capabilities": {
+            "streaming": True,
+            "tool_use_native": True,
+            "vision": True,
+        },
+    },
+    {
+        "id": "claude-opus-4-7",
+        "tier": "cloud",
+        "backend": "anthropic",
+        "model_id": "claude-opus-4-7",
+        "context_window": 1000000,
+        "max_output_tokens": 8192,
+        "tokens_per_second_est": 30,
+        "pricing": {
+            "input_per_million_usd": 5.0,
+            "output_per_million_usd": 25.0,
+        },
+        "capabilities": {
+            "streaming": True,
+            "tool_use_native": True,
+            "vision": True,
+        },
+    },
+    {
+        "id": "claude-code",
+        "tier": "cloud",
+        "backend": "anthropic",
+        "context_window": 1000000,
+        "max_output_tokens": 8192,
+        "tokens_per_second_est": 30,
+        "pricing": {
+            "input_per_million_usd": 5.0,
+            "output_per_million_usd": 25.0,
+        },
+        "capabilities": {
+            "streaming": True,
+            "tool_use_native": True,
+            "vision": True,
+        },
+        "note": "alias for the default Claude tier; currently Opus 4.7",
+    },
+    {
+        "id": "hybrid-auto",
+        "tier": "router",
+        "backend": "litellm-proxy",
+        "backend_url": "http://127.0.0.1:4000",
+        "context_window": 1000000,
+        "max_output_tokens": 8192,
+        "pricing": {
+            "input_per_million_usd": None,
+            "output_per_million_usd": None,
+        },
+        "capabilities": {
+            "streaming": True,
+            "tool_use_native": True,
+            "vision": True,
+        },
+        "note": "size + complexity router; picks the cheapest tier that fits",
+    },
+]
+
+
+def _probe_ollama_loaded_models() -> set[str]:
+    """Return the set of model tags currently loaded in Ollama. Uses a
+    300ms timeout so a hung Ollama can't slow down the metadata
+    endpoint -- on timeout we just report nothing loaded."""
+    try:
+        import httpx  # local import: httpx is in the dashboard venv
+
+        resp = httpx.get("http://127.0.0.1:11434/api/ps", timeout=0.3)
+        if resp.status_code != 200:
+            return set()
+        data = resp.json()
+        return {m.get("name", "") for m in data.get("models", []) if m.get("name")}
+    except Exception:
+        return set()
+
+
+def _macm4_models_payload() -> dict[str, Any]:
+    """Build the response body. Centralised so tests can call it
+    without spinning up the ASGI app."""
+    import os
+    loaded_ollama = _probe_ollama_loaded_models()
+    expected_ollama = os.environ.get("OLLAMA_TAG", "")
+
+    models: list[dict[str, Any]] = []
+    for tier in _MACM4_TIERS:
+        entry = dict(tier)
+        # Add a "warm" flag for local tiers based on Ollama /api/ps
+        # output. MLX doesn't have a comparable endpoint so we trust
+        # the launchd plist (KeepAlive=true) and report warm=true
+        # unconditionally for local-fast.
+        if tier["tier"] == "local":
+            if tier["backend"] == "ollama":
+                entry["warm"] = bool(expected_ollama) and expected_ollama in loaded_ollama
+            elif tier["backend"] == "mlx":
+                # The MLX server stays warm for the process lifetime
+                # of the launchd-managed binary. Best-effort port
+                # check would add latency for little gain.
+                entry["warm"] = True
+            else:
+                entry["warm"] = False
+        models.append(entry)
+    return {
+        "data": models,
+        "object": "list",
+        "_meta": {
+            "schema_version": 1,
+            "generated_at": int(time.time()),
+            "dashboard_url": "http://127.0.0.1:4001",
+            "proxy_url": "http://127.0.0.1:4000",
+        },
+    }
+
+
+@app.get("/api/macm4-models")
+def macm4_models() -> JSONResponse:
+    """Rich model metadata for Cline (and other clients) to drive UI
+    badges, cost-savings widgets, and warm-up indicators."""
+    return JSONResponse(_macm4_models_payload())
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("dashboard.app:app", host="127.0.0.1", port=4001, reload=False)

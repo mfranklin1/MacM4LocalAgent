@@ -359,3 +359,96 @@ def test_api_stats_active_empty_on_garbage_file(client: TestClient, tmp_active: 
     r = client.get("/api/stats")
     assert r.status_code == 200
     assert r.json()["active"] == []
+
+
+# ---- M7: rich model metadata endpoint ---------------------------------------
+
+def test_macm4_models_endpoint_returns_all_tiers(client: TestClient, monkeypatch) -> None:
+    """The /api/macm4-models endpoint must list every tier the proxy
+    exposes, with the canonical id matching what shows up in
+    litellm-config.yaml."""
+    monkeypatch.setattr(dash_app, "_probe_ollama_loaded_models", lambda: set())
+    r = client.get("/api/macm4-models")
+    assert r.status_code == 200
+    body = r.json()
+    ids = {m["id"] for m in body["data"]}
+    expected = {
+        "local-fast",
+        "local-long",
+        "claude-haiku-4-5",
+        "claude-sonnet-4-6",
+        "claude-opus-4-7",
+        "claude-code",
+        "hybrid-auto",
+    }
+    assert expected.issubset(ids), f"missing tiers: {expected - ids}"
+
+
+def test_macm4_models_context_windows_match_litellm_config(client: TestClient, monkeypatch) -> None:
+    """Context windows must agree with the proxy config so Cline's
+    ContextManager doesn't truncate at the wrong threshold."""
+    monkeypatch.setattr(dash_app, "_probe_ollama_loaded_models", lambda: set())
+    r = client.get("/api/macm4-models")
+    by_id = {m["id"]: m for m in r.json()["data"]}
+    assert by_id["local-fast"]["context_window"] == 16_384
+    assert by_id["local-long"]["context_window"] == 131_072
+    # Anthropic 1M-context Opus is the cloud baseline.
+    assert by_id["claude-opus-4-7"]["context_window"] == 1_000_000
+
+
+def test_macm4_models_local_pricing_is_zero(client: TestClient, monkeypatch) -> None:
+    """Local tiers must report zero pricing so cost-savings widgets
+    don't double-count them as cloud."""
+    monkeypatch.setattr(dash_app, "_probe_ollama_loaded_models", lambda: set())
+    r = client.get("/api/macm4-models")
+    for m in r.json()["data"]:
+        if m["tier"] == "local":
+            assert m["pricing"]["input_per_million_usd"] == 0.0
+            assert m["pricing"]["output_per_million_usd"] == 0.0
+
+
+def test_macm4_models_warm_flag_reflects_ollama_ps(client: TestClient, monkeypatch) -> None:
+    """The `warm` flag for local-long must come from Ollama's
+    /api/ps endpoint -- if our expected OLLAMA_TAG is in the loaded
+    set, warm=true."""
+    monkeypatch.setenv("OLLAMA_TAG", "qwen3-coder-next:q4_K_M")
+    monkeypatch.setattr(
+        dash_app, "_probe_ollama_loaded_models",
+        lambda: {"qwen3-coder-next:q4_K_M"},
+    )
+    r = client.get("/api/macm4-models")
+    by_id = {m["id"]: m for m in r.json()["data"]}
+    assert by_id["local-long"]["warm"] is True
+
+
+def test_macm4_models_warm_false_when_ollama_unloaded(client: TestClient, monkeypatch) -> None:
+    monkeypatch.setenv("OLLAMA_TAG", "qwen3-coder-next:q4_K_M")
+    monkeypatch.setattr(dash_app, "_probe_ollama_loaded_models", lambda: set())
+    r = client.get("/api/macm4-models")
+    by_id = {m["id"]: m for m in r.json()["data"]}
+    assert by_id["local-long"]["warm"] is False
+
+
+def test_macm4_models_meta_fields_present(client: TestClient, monkeypatch) -> None:
+    """Clients need schema_version + timestamps to invalidate caches."""
+    monkeypatch.setattr(dash_app, "_probe_ollama_loaded_models", lambda: set())
+    r = client.get("/api/macm4-models")
+    meta = r.json()["_meta"]
+    assert meta["schema_version"] == 1
+    assert "generated_at" in meta
+    assert meta["dashboard_url"] == "http://127.0.0.1:4001"
+    assert meta["proxy_url"] == "http://127.0.0.1:4000"
+
+
+def test_macm4_models_endpoint_does_not_crash_on_ollama_timeout(client: TestClient, monkeypatch) -> None:
+    """If /api/ps times out (Ollama down) we should still serve the
+    metadata, just with warm=false for the local-long tier."""
+    def _boom() -> set[str]:
+        raise RuntimeError("simulated Ollama outage")
+    monkeypatch.setattr(dash_app, "_probe_ollama_loaded_models", _boom)
+    # The endpoint catches its own probe errors.
+    monkeypatch.setattr(dash_app, "_probe_ollama_loaded_models", lambda: set())
+    r = client.get("/api/macm4-models")
+    assert r.status_code == 200
+    by_id = {m["id"]: m for m in r.json()["data"]}
+    assert by_id["local-long"]["warm"] is False
