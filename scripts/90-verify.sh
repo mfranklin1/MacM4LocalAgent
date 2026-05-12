@@ -108,11 +108,13 @@ smoke() {
 echo
 echo "== Smoke matrix =="
 smoke "local-fast"  "Write a one-line Python function that returns x+1." "local-fast 1k tokens"
-smoke "hybrid-auto" "Refactor this small snippet: def f(x): return x*2" "hybrid-auto small -> local-fast"
+# Use a prompt that is clearly below ROUTE_FAST_MAX and contains no complexity-classifier keywords.
+smoke "hybrid-auto" "What is the capital of France?" "hybrid-auto tiny -> local-fast"
 
-# Build a long-ish prompt to probe local-long routing without hammering Claude.
-LONG="$(python3 -c "print('// noise\n' * 5000)")"
-smoke "hybrid-auto" "$LONG"$'\n\nSummarize the above noisy file in one sentence.' "hybrid-auto 18k tokens -> local-long"
+# 7000 lines × ~2.5 tok/line ≈ 17500 tokens > ROUTE_FAST_MAX(16000) → routes to local-long.
+# (5000 lines only reached ~12500 tokens, below the threshold.)
+LONG="$(python3 -c "print('// noise\n' * 7000)")"
+smoke "hybrid-auto" "$LONG"$'\n\nSummarize the above noisy file in one sentence.' "hybrid-auto 17k tokens -> local-long"
 
 # claude-code only if ANTHROPIC_API_KEY is set.
 if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
