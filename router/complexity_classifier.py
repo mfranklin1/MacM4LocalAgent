@@ -10,10 +10,17 @@ from __future__ import annotations
 
 import re
 
+_REFACTOR_SCOPE = re.compile(
+    # "refactor" immediately followed by a scope word (entire codebase, whole service, etc.)
+    r"\brefactor\s+(?:entire|whole|all|everything|codebase|repo|subsystem|module|service|layer|stack)"
+    # OR "refactor [the/this/our/your] [adj?] <named-system-component>"
+    r"|\brefactor(?:\s+\w+){0,3}\s+(?:subsystem|service|layer|stack|codebase|repo)",
+    re.IGNORECASE,
+)
+
 ARCH_PATTERNS = re.compile(
     r"\b(design|architect|architecture|system\s+design|trade-?offs?|"
-    r"refactor\s+(?:the|this|entire|whole)|migrate|migration|"
-    r"migration\s+plan|rewrite|restructure|root\s*cause)\b",
+    r"migrate|migration|migration\s+plan|rewrite|restructure|root\s*cause)\b",
     re.IGNORECASE,
 )
 
@@ -45,7 +52,7 @@ def classify(prompt: str) -> tuple[bool, str]:
     if EXPLICIT_TAG.search(prompt):
         return (True, "explicit [claude] tag")
 
-    if ARCH_PATTERNS.search(prompt):
+    if _REFACTOR_SCOPE.search(prompt) or ARCH_PATTERNS.search(prompt):
         return (True, "architecture/design language")
 
     if MULTIFILE_PATTERNS.search(prompt):

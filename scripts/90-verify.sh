@@ -6,6 +6,10 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck disable=SC1091
 source "$REPO_ROOT/config/detected.env"
 
+# Auth header array for curl calls that hit authenticated endpoints.
+# /v1/models is open (loopback-only, no auth gate); /v1/chat/completions requires the master key.
+HEADERS=(-H "Authorization: Bearer ${LITELLM_MASTER_KEY:-}")
+
 PASS=0
 FAIL=0
 
