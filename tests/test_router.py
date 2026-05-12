@@ -513,11 +513,31 @@ def test_decide_tier_cline_default_routes_to_local_long() -> None:
 
 # ---- M5: context saturation routing signal ------------------------------------
 
+@pytest.fixture
+def heuristic_only_estimator(monkeypatch):
+    """Pin _estimate_tokens to the cheap chars/3.6 heuristic so the M5
+    saturation tests have a single, deterministic token count regardless
+    of whether tiktoken (M1) decides to re-tokenize at a tier boundary.
+
+    Why: M5 covers the *routing* decision once a request approaches the
+    local-long ceiling -- not how tokens are counted. The padding helper
+    sizes content in heuristic units (chars/3.6); tiktoken on repeated
+    characters compresses heavily, collapsing the padding to far fewer
+    tokens and silently dropping below the saturation threshold. M1
+    already has dedicated coverage for the boundary-band tokenizer path
+    (see test_estimate_tokens_near_boundary_uses_tiktoken)."""
+    from router import route_by_size
+
+    monkeypatch.setattr(route_by_size, "_TIKTOKEN_DISABLED", True)
+    monkeypatch.setattr(route_by_size, "_TIKTOKEN_ENCODER", None)
+    yield
+
+
 def _padded_cline_msgs(task: str, target_fraction: float) -> list[dict[str, Any]]:
     """Build Cline messages whose _estimate_tokens result is approximately
-    target_fraction * ROUTE_LONG_MAX. We construct the padding directly in
-    the heuristic's units (chars/3.6) so the test is deterministic
-    regardless of which estimator path the router ends up using.
+    target_fraction * ROUTE_LONG_MAX. Sized in the heuristic's units
+    (chars/3.6); pair with the `heuristic_only_estimator` fixture so the
+    router uses the same heuristic when scoring the padded payload.
     """
     from router.route_by_size import ROUTE_LONG_MAX
 
@@ -529,7 +549,9 @@ def _padded_cline_msgs(task: str, target_fraction: float) -> list[dict[str, Any]
     )
 
 
-def test_decide_tier_cline_saturated_context_escalates_to_claude() -> None:
+def test_decide_tier_cline_saturated_context_escalates_to_claude(
+    heuristic_only_estimator,
+) -> None:
     """When the FULL request size approaches the local-long ceiling we
     escalate to claude-code instead of letting the local stack truncate.
 
@@ -543,7 +565,9 @@ def test_decide_tier_cline_saturated_context_escalates_to_claude() -> None:
     assert "saturation" in reason
 
 
-def test_decide_tier_cline_below_saturation_threshold_stays_local() -> None:
+def test_decide_tier_cline_below_saturation_threshold_stays_local(
+    heuristic_only_estimator,
+) -> None:
     """A long-but-not-saturated request stays on local-long."""
     # 50% of the local-long ceiling: comfortably below the 85% trigger.
     msgs = _padded_cline_msgs(
@@ -553,7 +577,9 @@ def test_decide_tier_cline_below_saturation_threshold_stays_local() -> None:
     assert tier == "local-long"
 
 
-def test_decide_tier_cline_saturation_marks_sticky() -> None:
+def test_decide_tier_cline_saturation_marks_sticky(
+    heuristic_only_estimator,
+) -> None:
     """A saturation-triggered escalation must mark the task fingerprint
     sticky so subsequent turns don't bounce back to local-long once
     truncation reduces the request size."""
@@ -567,7 +593,9 @@ def test_decide_tier_cline_saturation_marks_sticky() -> None:
     assert "saturation" in sticky
 
 
-def test_decide_tier_cline_saturation_respects_local_override() -> None:
+def test_decide_tier_cline_saturation_respects_local_override(
+    heuristic_only_estimator,
+) -> None:
     """The [local] opt-out tag must beat saturation -- if the user
     deliberately picked local on a near-full context, they accept the
     truncation tradeoff."""
@@ -579,7 +607,9 @@ def test_decide_tier_cline_saturation_respects_local_override() -> None:
     assert "[local]" in reason
 
 
-def test_decide_tier_cline_saturation_threshold_env_override(monkeypatch) -> None:
+def test_decide_tier_cline_saturation_threshold_env_override(
+    monkeypatch, heuristic_only_estimator,
+) -> None:
     """ROUTER_SATURATION_FRACTION lets operators tune the trigger
     point. Setting it to 0.99 makes a request that normally trips the
     default 0.85 threshold stay local."""
