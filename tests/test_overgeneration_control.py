@@ -421,11 +421,22 @@ def test_multi_turn_tighten_no_op_for_cline() -> None:
 
 def test_cline_stop_sequences_constant_shape() -> None:
     """Pin the exact stop list so accidental edits to the constant get
-    caught by the test suite. These four are picked because they are
-    the most common Cline tool tags by frequency observed in dumps."""
+    caught by the test suite.
+
+    Ordering reflects the cost of an over-generation past each tag:
+      1. </attempt_completion> stops hallucinated next-turn content
+         (worst case: 3-5x output token inflation)
+      2. </replace_in_file> -- most-frequent edit tool
+      3. </write_to_file> -- bulk file write
+      4. </execute_command> -- shell tool; over-generation past this
+         can produce misleading "next command" prose
+
+    </read_file> is intentionally excluded: over-generation there is
+    benign (just verbose prose) and we are hard-capped at 4 stops.
+    """
     assert CLINE_STOP_SEQUENCES == [
+        "</attempt_completion>",
         "</replace_in_file>",
         "</write_to_file>",
-        "</read_file>",
-        "</attempt_completion>",
+        "</execute_command>",
     ]

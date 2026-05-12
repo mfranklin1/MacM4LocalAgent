@@ -67,14 +67,38 @@ LOCAL_STOP_SEQUENCES = ["\n```python:", "\n```py:"]
 # the harness or wastes tokens and wall time.
 #
 # OpenAI/LiteLLM/Ollama accept up to 4 stop sequences reliably, so we
-# pick the four most common Cline tool-close tags. The remaining tools
-# (search_files, list_files, etc.) are rarer and a runaway is acceptable
-# for them while we keep within the per-request stop budget.
+# pick the four highest-value Cline tool-close tags. Ordering reflects
+# the cost of an over-generation past each tag:
+#
+#   1. </attempt_completion> -- the task-end signal. Anything generated
+#      AFTER this is hallucinated next-turn content (fake user message,
+#      fake tool result, fake next assistant). This is by far the
+#      worst-case over-generation: it inflates output tokens 3-5x and
+#      pollutes Cline's parser. Always stop here.
+#
+#   2. </replace_in_file> -- the most-frequent edit tool. Cline parses
+#      only the FIRST tool tag; anything after the closing </replace>
+#      is wasted decode budget.
+#
+#   3. </write_to_file> -- bulk file write. Same parser dynamics as
+#      replace_in_file; over-generation past the close tag is purely
+#      wasted output.
+#
+#   4. </execute_command> -- shell command tool. Over-generation past
+#      this tag has a worse outcome than </read_file>: a runaway
+#      execute_command can suggest follow-up shell commands the model
+#      did not actually invoke, which can mislead a user reading the
+#      assistant message. read_file over-generation is harmless prose;
+#      execute_command over-generation looks authoritative and isn't.
+#
+# Dropped from the previous set: </read_file>. Cline rarely chains a
+# second read_file inside a single response, the over-generation
+# pattern is benign (just verbose), and the cap is hard at 4 entries.
 CLINE_STOP_SEQUENCES = [
+    "</attempt_completion>",
     "</replace_in_file>",
     "</write_to_file>",
-    "</read_file>",
-    "</attempt_completion>",
+    "</execute_command>",
 ]
 
 LOCAL_SYSTEM_NUDGE = (
