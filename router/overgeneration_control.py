@@ -123,6 +123,22 @@ LOCAL_FIXUP_NUDGE = (
     "soon as the fix is complete."
 )
 
+# Qwen3-Coder-Next supports a runtime "thinking mode" switch via the
+# /think and /no_think pseudo-directives placed at the start of the
+# user message. When enabled, the model emits an internal reasoning
+# trace (visible to the harness but not the user) before its final
+# answer, at the cost of higher latency and ~10-30% more output
+# tokens.
+#
+# Why this constant exists: the router escalates *complex* tasks to
+# claude-code by default, so the local model normally doesn't have to
+# handle reasoning-heavy work. But when a user explicitly tags a
+# complex task `[local]` (opting out of cloud escalation), or when
+# context saturation forces a normally-claude task back to local
+# because of explicit overrides, the local model benefits from the
+# extra reasoning budget. We inject /think to give Qwen3 a fair shot.
+QWEN3_THINK_PREFIX = "/think "
+
 # Models we treat as "local" for the purposes of these controls.
 # Includes both the alias names and common upstream id prefixes that
 # LiteLLM might pass through. Claude-anything is excluded.
@@ -395,6 +411,55 @@ def apply_multi_turn_tighten(
                     content.append({"type": "text", "text": fixup_nudge})
             else:
                 last["content"] = fixup_nudge
+    except Exception:
+        pass
+    return data
+
+
+def _has_think_directive(text: str) -> bool:
+    """True if the user message already starts with /think or
+    /no_think. Both are Qwen3 runtime switches and we treat either as
+    "user already decided", so we don't override."""
+    stripped = text.lstrip()
+    return stripped.startswith("/think") or stripped.startswith("/no_think")
+
+
+def inject_qwen3_think_directive(data: dict[str, Any]) -> dict[str, Any]:
+    """Prepend `/think ` to the trailing user message so Qwen3-Coder-Next
+    engages extended-reasoning mode for this turn.
+
+    Idempotent: a /think or /no_think directive already at the start
+    of the user message is left in place. Mutates and returns `data`
+    so it can be chained with apply_static_guardrail / apply_all.
+
+    Only intended for local-tier calls. The caller is responsible for
+    gating on `_is_local(data.get("model"))`; we apply unconditionally
+    here for testability.
+    """
+    try:
+        messages = data.get("messages")
+        if not isinstance(messages, list) or not messages:
+            return data
+        # Find the LAST user message and prepend the directive there.
+        for msg in reversed(messages):
+            if not isinstance(msg, dict) or msg.get("role") != "user":
+                continue
+            content = msg.get("content")
+            if isinstance(content, str):
+                if _has_think_directive(content):
+                    return data
+                msg["content"] = QWEN3_THINK_PREFIX + content
+            elif isinstance(content, list):
+                # Walk to the FIRST text part and prepend there.
+                for part in content:
+                    if isinstance(part, dict) and isinstance(part.get("text"), str):
+                        if _has_think_directive(part["text"]):
+                            return data
+                        part["text"] = QWEN3_THINK_PREFIX + part["text"]
+                        break
+            else:
+                msg["content"] = QWEN3_THINK_PREFIX.rstrip()
+            return data
     except Exception:
         pass
     return data

@@ -41,6 +41,7 @@ from router.overgeneration_control import (  # noqa: E402
     _looks_like_cline,
     apply_multi_turn_tighten,
     apply_static_guardrail,
+    inject_qwen3_think_directive,
 )
 
 try:
@@ -97,6 +98,19 @@ def _control_flag(name: str, default: str = "1") -> bool:
 # default too. Disable with OVERGEN_STATIC=0 / OVERGEN_MULTI_TURN=0.
 ENABLE_STATIC_GUARDRAIL = _control_flag("OVERGEN_STATIC", "1")
 ENABLE_MULTI_TURN_TIGHTEN = _control_flag("OVERGEN_MULTI_TURN", "1")
+# Qwen3 /think injection for forced-local complex tasks. Defaults on:
+# the gating logic (only when "[local]" appears in route_reason AND
+# the resolved model is local) is conservative enough that the
+# default-on posture won't surprise users on trivial calls.
+ENABLE_THINK_INJECTION = _control_flag("ROUTER_THINK_INJECTION", "1")
+
+
+def _is_local_model_name(model: str | None) -> bool:
+    """True if the resolved model name belongs to the local tier."""
+    if not isinstance(model, str):
+        return False
+    canonical = model[len("gpt-"):] if model.startswith("gpt-") else model
+    return canonical in ("local-fast", "local-long", "local-agent") or canonical.startswith("local-coder-")
 
 # When OVERGEN_TRACE=1, append a one-line summary to .logs/overgen-trace.log
 # every time a control fires. Used to verify Cursor traffic is being
@@ -826,6 +840,32 @@ class SizeBasedRouter(_LiteLLMCustomLogger):
             pre_stop = data.get("stop")
             pre_n_msgs = len(data.get("messages") or [])
             pre_first_role = ((data.get("messages") or [{}])[0] or {}).get("role")
+
+            # Qwen3 /think directive injection. Fires only when:
+            #   1. Resolved model is local (local-fast or local-long).
+            #   2. The routing reason indicates the user EXPLICITLY
+            #      chose local despite signals that would normally
+            #      escalate to Claude (e.g. `[local]` tag, complex
+            #      content kept local by user override).
+            #
+            # The cheapest reliable signal is the route_reason string
+            # stamped above. It contains "[local]" exactly when the
+            # explicit opt-out tag fired.
+            #
+            # Why we don't unconditionally inject /think on every
+            # local call: extended-reasoning mode costs ~10-30% more
+            # output tokens and roughly doubles per-turn latency. For
+            # trivial tasks that's wasted budget. We only pay the
+            # cost when the user explicitly opted into a hard local
+            # turn.
+            if ENABLE_THINK_INJECTION and _is_local_model_name(data.get("model")):
+                route_reason = (
+                    data.get("metadata", {}).get("route_reason") or ""
+                )
+                if "[local]" in route_reason:
+                    inject_qwen3_think_directive(data)
+                    meta = data.setdefault("metadata", {})
+                    meta["qwen3_think_injected"] = True
 
             if ENABLE_STATIC_GUARDRAIL:
                 apply_static_guardrail(data)

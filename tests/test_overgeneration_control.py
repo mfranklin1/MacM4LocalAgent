@@ -510,3 +510,95 @@ def test_static_guardrail_plan_mode_does_not_raise_lower_cap() -> None:
     }
     apply_static_guardrail(data)
     assert data["max_tokens"] == 256
+
+
+# ---- M6: Qwen3 /think directive injection ------------------------------------
+
+def test_inject_qwen3_think_prepends_directive_to_string_content() -> None:
+    from router.overgeneration_control import inject_qwen3_think_directive
+    data = {
+        "model": "local-long",
+        "messages": [
+            {"role": "system", "content": "You are Cline."},
+            {"role": "user", "content": "<task>Fix the failing test.</task>"},
+        ],
+    }
+    inject_qwen3_think_directive(data)
+    assert data["messages"][-1]["content"].startswith("/think ")
+    assert "<task>" in data["messages"][-1]["content"]
+
+
+def test_inject_qwen3_think_idempotent_when_directive_present() -> None:
+    """Already-prefixed messages must not be double-injected."""
+    from router.overgeneration_control import inject_qwen3_think_directive
+    data = {
+        "model": "local-long",
+        "messages": [
+            {"role": "user", "content": "/think Fix the failing test."},
+        ],
+    }
+    inject_qwen3_think_directive(data)
+    assert data["messages"][-1]["content"].count("/think") == 1
+
+
+def test_inject_qwen3_think_respects_no_think_opt_out() -> None:
+    """If the user explicitly disabled thinking with /no_think, we
+    must not flip it back on."""
+    from router.overgeneration_control import inject_qwen3_think_directive
+    data = {
+        "model": "local-long",
+        "messages": [
+            {"role": "user", "content": "/no_think Fix the failing test."},
+        ],
+    }
+    inject_qwen3_think_directive(data)
+    assert data["messages"][-1]["content"].startswith("/no_think")
+    assert "/think " not in data["messages"][-1]["content"]
+
+
+def test_inject_qwen3_think_handles_list_content() -> None:
+    """OpenAI content-parts form: prepend to the first text part."""
+    from router.overgeneration_control import inject_qwen3_think_directive
+    data = {
+        "model": "local-long",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "<task>Fix bug.</task>"},
+                    {"type": "image_url", "image_url": "data:..."},
+                ],
+            }
+        ],
+    }
+    inject_qwen3_think_directive(data)
+    first_text = data["messages"][-1]["content"][0]["text"]
+    assert first_text.startswith("/think ")
+
+
+def test_inject_qwen3_think_targets_last_user_message() -> None:
+    """When there are multiple user messages we prepend to the LAST one
+    (the one the model is being asked to respond to)."""
+    from router.overgeneration_control import inject_qwen3_think_directive
+    data = {
+        "model": "local-long",
+        "messages": [
+            {"role": "user", "content": "first question"},
+            {"role": "assistant", "content": "first answer"},
+            {"role": "user", "content": "second question"},
+        ],
+    }
+    inject_qwen3_think_directive(data)
+    assert data["messages"][0]["content"] == "first question"
+    assert data["messages"][-1]["content"].startswith("/think second question")
+
+
+def test_inject_qwen3_think_safe_on_empty_messages() -> None:
+    from router.overgeneration_control import inject_qwen3_think_directive
+    for data in (
+        {"model": "local-long", "messages": []},
+        {"model": "local-long"},  # missing messages key
+        {},  # missing both
+    ):
+        # Must not raise.
+        inject_qwen3_think_directive(data)
