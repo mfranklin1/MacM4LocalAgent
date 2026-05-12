@@ -408,6 +408,86 @@ def test_decide_tier_cline_default_routes_to_local_long() -> None:
     assert "default" in reason
 
 
+# ---- M5: context saturation routing signal ------------------------------------
+
+def _padded_cline_msgs(task: str, target_fraction: float) -> list[dict[str, Any]]:
+    """Build Cline messages whose _estimate_tokens result is approximately
+    target_fraction * ROUTE_LONG_MAX. We construct the padding directly in
+    the heuristic's units (chars/3.6) so the test is deterministic
+    regardless of which estimator path the router ends up using.
+    """
+    from router.route_by_size import ROUTE_LONG_MAX
+
+    target_tokens = int(ROUTE_LONG_MAX * target_fraction)
+    pad_chars = int(target_tokens * 3.6)
+    return _cline_msgs(
+        task,
+        {"role": "assistant", "content": "y" * pad_chars},
+    )
+
+
+def test_decide_tier_cline_saturated_context_escalates_to_claude() -> None:
+    """When the FULL request size approaches the local-long ceiling we
+    escalate to claude-code instead of letting the local stack truncate.
+
+    Pad to ~88% of ROUTE_LONG_MAX: comfortably above the 85% default
+    trigger and below the 99% override used in the env-override test."""
+    msgs = _padded_cline_msgs(
+        "Add a single-line comment to main.py", target_fraction=0.88
+    )
+    tier, reason, _ = decide_tier_cline(msgs)
+    assert tier == "claude-code"
+    assert "saturation" in reason
+
+
+def test_decide_tier_cline_below_saturation_threshold_stays_local() -> None:
+    """A long-but-not-saturated request stays on local-long."""
+    # 50% of the local-long ceiling: comfortably below the 85% trigger.
+    msgs = _padded_cline_msgs(
+        "Add a single-line comment to main.py", target_fraction=0.5
+    )
+    tier, _reason, _ = decide_tier_cline(msgs)
+    assert tier == "local-long"
+
+
+def test_decide_tier_cline_saturation_marks_sticky() -> None:
+    """A saturation-triggered escalation must mark the task fingerprint
+    sticky so subsequent turns don't bounce back to local-long once
+    truncation reduces the request size."""
+    from router.route_by_size import _check_sticky, _task_fingerprint
+
+    task = "Add a single-line comment to main.py"
+    msgs = _padded_cline_msgs(task, target_fraction=0.88)
+    decide_tier_cline(msgs)
+    sticky = _check_sticky(_task_fingerprint(task))
+    assert sticky is not None
+    assert "saturation" in sticky
+
+
+def test_decide_tier_cline_saturation_respects_local_override() -> None:
+    """The [local] opt-out tag must beat saturation -- if the user
+    deliberately picked local on a near-full context, they accept the
+    truncation tradeoff."""
+    msgs = _padded_cline_msgs(
+        "[local] Add a single-line comment to main.py", target_fraction=0.88
+    )
+    tier, reason, _ = decide_tier_cline(msgs)
+    assert tier == "local-long"
+    assert "[local]" in reason
+
+
+def test_decide_tier_cline_saturation_threshold_env_override(monkeypatch) -> None:
+    """ROUTER_SATURATION_FRACTION lets operators tune the trigger
+    point. Setting it to 0.99 makes a request that normally trips the
+    default 0.85 threshold stay local."""
+    monkeypatch.setenv("ROUTER_SATURATION_FRACTION", "0.99")
+    msgs = _padded_cline_msgs(
+        "Add a single-line comment to main.py", target_fraction=0.88
+    )
+    tier, _, _ = decide_tier_cline(msgs)
+    assert tier == "local-long"
+
+
 def test_decide_tier_cline_complexity_keyword_escalates() -> None:
     msgs = _cline_msgs("Refactor the entire authentication architecture")
     tier, reason, _ = decide_tier_cline(msgs)

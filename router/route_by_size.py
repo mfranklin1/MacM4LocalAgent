@@ -646,6 +646,41 @@ def decide_tier_cline(
         _mark_sticky(fingerprint, why)
         return ("claude-code", f"cline+task({fingerprint}): {why}", task_tokens)
 
+    # Context saturation check. Cline accumulates the full message
+    # history (system prompt + every tool result + every assistant
+    # turn) and resends it on each call, so a long task hits the
+    # local-long 131K ceiling well before the user notices.
+    #
+    # When the FULL request size approaches the local-long ceiling we
+    # escalate to claude-code (200K window) rather than letting the
+    # local stack truncate mid-turn. Sticky-marked so subsequent
+    # turns of the same long-running task stay on Claude instead of
+    # bouncing back and forth between truncated local-long calls and
+    # full-context claude-code calls.
+    #
+    # Threshold rationale:
+    #   - Default 0.85 of ROUTE_LONG_MAX (default 128K), so ~108800.
+    #   - Local-long's actual num_ctx is 131K but model quality drops
+    #     visibly past ~70% (the ContextManager truncation threshold
+    #     on the Cline side, separately).
+    #   - Override with ROUTER_SATURATION_FRACTION env var.
+    full_request_tokens = _estimate_tokens(messages)
+    saturation_fraction = float(
+        os.environ.get("ROUTER_SATURATION_FRACTION", "0.85")
+    )
+    saturation_limit = int(ROUTE_LONG_MAX * saturation_fraction)
+    if full_request_tokens > saturation_limit:
+        sat_reason = (
+            f"saturation: {full_request_tokens} > {saturation_limit} "
+            f"({int(saturation_fraction * 100)}% of {ROUTE_LONG_MAX})"
+        )
+        _mark_sticky(fingerprint, sat_reason)
+        return (
+            "claude-code",
+            f"cline+saturation({fingerprint}): {sat_reason}",
+            task_tokens,
+        )
+
     # Tool-result-driven escalation. Only fires on turns 2+ since
     # turn-1 has no tool result yet. The trigger now requires
     # corroborating signals (see `_looks_like_failure`) so a single
