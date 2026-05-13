@@ -63,7 +63,7 @@ def _folder_entry(wt_abs: pathlib.Path, main_root: pathlib.Path) -> dict:
 
 def sync(dry_run: bool = False) -> None:
     main_root, linked = _parse_worktrees()
-    workspace_file = main_root / "MacM4LocalAgent.code-workspace"
+    workspace_file = main_root / f"{main_root.name}.code-workspace"
 
     folders: list[dict] = [{"path": "."}]
     for wt in linked:
