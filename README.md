@@ -275,80 +275,33 @@ other services automatically after `make install`.
 
 ### 7. Install the Cline extension
 
-Cline is **not** installed by `make install`. It's an IDE-side extension
-(it lives in your Cursor / VS Code user profile, not in this repo's
-venv). Use one of the paths below.
+This project uses the **CertifyOS macm4 fork of Cline** — a customised
+build that ships with local-agent routing fixes and CertifyOS governance
+rules pre-loaded. The VSIX is pulled from GCS on every install; it is
+**never installed from the VS Marketplace**.
 
-#### Easiest: `make cline`
+Full install instructions (prerequisites, script options, post-install
+configuration, and upgrade steps) are in the fork's README:
 
-```bash
-make cline
-```
+**[github.com/martinfr-certifyos/cline → macm4 Install & Setup](https://github.com/martinfr-certifyos/cline#macm4-fork--install--setup)**
 
-This runs [`scripts/install-cline.sh`](scripts/install-cline.sh), which:
-
-1. Looks for the `cursor` CLI on PATH, then for
-   `/Applications/Cursor.app/Contents/Resources/app/bin/cursor`.
-2. If neither is found, falls back to the `code` CLI for VS Code
-   (then `/Applications/Visual Studio Code.app/.../bin/code`).
-3. Runs `<cli> --install-extension saoudrizwan.claude-dev`.
-4. Prints the next steps (relaunch, gear icon, etc.).
-
-Force a specific IDE: `IDE=cursor make cline` or `IDE=code make cline`.
-
-If neither IDE is installed yet, the script prints the download URLs and
-exits cleanly so you can install the IDE first and re-run `make cline`.
-
-#### Manual: CLI
-
-If you'd rather run the install command yourself:
-
-**Cursor** (recommended — this project's documented integration path):
+Quick-start (assumes `gcloud` is authenticated and your IDE is installed):
 
 ```bash
-# Either form works:
-cursor --install-extension saoudrizwan.claude-dev
-/Applications/Cursor.app/Contents/Resources/app/bin/cursor \
-    --install-extension saoudrizwan.claude-dev
+cd ~/Documents/GitHub/cline-macm4-fork   # or wherever you cloned it
+./scripts/install-cline-macm4.sh
 ```
 
-**VS Code:**
+To target a specific IDE without the interactive prompt:
 
 ```bash
-# Requires the 'code' CLI in PATH. If `code` isn't found:
-#   open VS Code -> Cmd+Shift+P -> "Shell Command: Install 'code' command in PATH"
-code --install-extension saoudrizwan.claude-dev
+TARGET=cursor ./scripts/install-cline-macm4.sh
+TARGET=vscode ./scripts/install-cline-macm4.sh
+TARGET=both   ./scripts/install-cline-macm4.sh
 ```
 
-Don't have the IDE yet?
-
-- **Cursor:** download from <https://cursor.com>. The CLI ships in the
-  `.app` bundle automatically; no extra setup needed.
-- **VS Code:** download from <https://code.visualstudio.com>. Then enable
-  the `code` CLI from inside VS Code as noted above.
-
-#### Manual: GUI / marketplace
-
-If the CLI doesn't work or you prefer clicking:
-
-1. Open the IDE (Cursor or VS Code).
-2. **Extensions** tab — sidebar icon, or `Cmd+Shift+X`.
-3. Search for **`Cline`** (publisher: `saoudrizwan`).
-4. Click **Install** on the entry titled "Cline" by saoudrizwan.
-
-Direct marketplace link (works for both Cursor and VS Code, since Cursor
-reads the same OpenVSX/marketplace index):
-<https://marketplace.visualstudio.com/items?itemName=saoudrizwan.claude-dev>
-
-#### After install (any path)
-
-1. **Fully quit and relaunch** the IDE — Cline's activation hooks only
-   fire on a fresh start, not on hot-reload.
-2. Verify Cline shows up: the left sidebar should have a new robot /
-   chat-bubble icon. If not, check `~/.cursor/extensions/saoudrizwan.claude-dev*`
-   (Cursor) or `~/.vscode/extensions/saoudrizwan.claude-dev*` (VS Code)
-   exists.
-3. Continue to [Wire Cline to the proxy](#wire-cline-to-the-proxy) below.
+After install, fully quit and relaunch your IDE, then continue to
+[Wire Cline to the proxy](#wire-cline-to-the-proxy) below.
 
 ---
 
