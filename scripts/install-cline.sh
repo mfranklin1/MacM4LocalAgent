@@ -90,10 +90,10 @@ log "using ${IDE_NAME} CLI: $PICKED"
 
 # ── Try GCS VSIX first (MacM4-patched build) ──────────────────────────────
 VSIX_TMP=""
-if command -v gsutil >/dev/null 2>&1; then
+if command -v gcloud >/dev/null 2>&1; then
   VSIX_TMP="$(mktemp /tmp/cline-macm4-XXXXXX.vsix)"
   log "downloading MacM4 VSIX from ${GCS_VSIX_PATH} ..."
-  if gsutil cp "${GCS_VSIX_PATH}" "${VSIX_TMP}" 2>/dev/null; then
+  if gcloud storage cp "${GCS_VSIX_PATH}" "${VSIX_TMP}" 2>/dev/null; then
     log "installing MacM4-patched Cline (${EXT_ID_PATCHED}) into ${IDE_NAME} ..."
     if "$PICKED" --install-extension "${VSIX_TMP}"; then
       ok "MacM4-patched Cline installed in ${IDE_NAME}."
@@ -104,11 +104,11 @@ if command -v gsutil >/dev/null 2>&1; then
       rm -f "${VSIX_TMP}"; VSIX_TMP=""
     fi
   else
-    warn "GCS download failed (gsutil auth issue?); falling back to marketplace."
+    warn "GCS download failed (gcloud auth issue?); falling back to marketplace."
     rm -f "${VSIX_TMP}"; VSIX_TMP=""
   fi
 else
-  warn "gsutil not found; installing upstream Cline from marketplace (no MacM4 patches)."
+  warn "gcloud not found; installing upstream Cline from marketplace (no MacM4 patches)."
 fi
 
 # ── Marketplace fallback ──────────────────────────────────────────────────

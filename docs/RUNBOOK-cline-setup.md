@@ -64,7 +64,7 @@ which lacks the MacM4 patches but is otherwise functional.
 
 **Manual install** (if `make cline` is not available):
 ```bash
-gsutil cp gs://cline-repo/cline-macm4/cline-macm4-latest.vsix /tmp/cline-macm4.vsix
+gcloud storage cp gs://cline-repo/cline-macm4/cline-macm4-latest.vsix /tmp/cline-macm4.vsix
 "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code" \
   --install-extension /tmp/cline-macm4.vsix
 ```
