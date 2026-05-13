@@ -3,8 +3,9 @@
 Hybrid local + Claude coding setup for Apple Silicon (M3 Max or newer,
 64-128 GB RAM). Runs **Qwen3-Coder-Next** locally via Ollama, plus a small
 MLX server for fast short-context turns, and falls back to **Claude
-Opus 4.7** when a prompt is too big or too complex for local. You drive
-it from the **Cline** extension running inside **Cursor**.
+Opus 4.7** when a prompt is too big or too complex for local. Works with
+**Cline** and **Claude Code** — routes small tasks to free local models,
+escalates large tasks to Anthropic with configurable billing.
 
 ![status: alpha](https://img.shields.io/badge/status-alpha-orange)
 ![platform: macOS arm64](https://img.shields.io/badge/platform-macOS%20arm64-lightgrey)
@@ -15,20 +16,31 @@ it from the **Cline** extension running inside **Cursor**.
 
 ```mermaid
 flowchart LR
-    Cline["Cline extension<br/>(inside Cursor)"] -->|"OpenAI /v1<br/>over loopback"| LiteLLM["LiteLLM :4000<br/>(127.0.0.1 only, no auth)"]
-    LiteLLM -->|"≤16 k tokens"|       MLX["MLX server :8081<br/>Qwen2.5-Coder-7B-Instruct (4-bit)"]
-    LiteLLM -->|"16k–64k context"|    Ollama["Ollama :11434<br/>qwen3-coder-next:q4_K_M<br/>q4_0 KV cache (~4×)"]
-    LiteLLM -->|"complex / >64k"|     Claude["Anthropic API<br/>claude-opus-4-7"]
+    subgraph Clients
+        Cline["Cline extension<br/>(Cursor/VS Code)"]
+        ClaudeCode["Claude Code<br/>(Cursor/VS Code)"]
+    end
+    
+    Cline -->|"OpenAI /v1<br/>:4000"| LiteLLM["LiteLLM"]
+    ClaudeCode -->|"Anthropic /v1<br/>:4002"| ClaudeProxy["claude_proxy"]
+    
+    LiteLLM -->|"≤128k"| LocalModels["Local Models<br/>Ollama/MLX<br/>(FREE)"]
+    ClaudeProxy -->|"≤128k"| LiteLLM
+    
+    LiteLLM -->|">128k"| Claude["Anthropic API<br/>claude-opus-4-7<br/>(API key)"]
+    ClaudeProxy -->|">128k<br/>passthrough"| Claude2["Anthropic API<br/>claude-opus-4-7<br/>(Team OAuth)"]
+    
     LiteLLM --> DB[("cost.db")]
-    DB --> CLI["make report"]
+    ClaudeProxy --> DB
     DB --> Dash["Dashboard :4001"]
 ```
 
-> **Why Cline, not Cursor's own Agent mode?** Cursor BYOK routes requests
+> **Why Cline + local, not Cursor's native Agent?** Cursor's native agent routes requests
 > through `api2.cursor.sh` (blocks loopback + RFC 1918 + CGNAT) and doesn't
-> pass tool-call deltas through. Cline runs in the local extension host and
-> calls `127.0.0.1:4000` directly. Details:
-> [docs/RUNBOOK-cline-setup.md](docs/RUNBOOK-cline-setup.md).
+> pass tool-call deltas through. Cline and Claude Code run in the local extension host and
+> call `127.0.0.1:4000` / `:4002` directly. Details:
+> [docs/RUNBOOK-cline-setup.md](docs/RUNBOOK-cline-setup.md) and
+> [docs/CLAUDE-CODE-INTEGRATION.md](docs/CLAUDE-CODE-INTEGRATION.md).
 
 ---
 
@@ -459,6 +471,7 @@ More detail: [docs/security.md](docs/security.md).
 Deep-dive docs under [`docs/`](docs/):
 
 - [Cline setup runbook](docs/RUNBOOK-cline-setup.md) — primary integration path
+- [Claude Code integration](docs/CLAUDE-CODE-INTEGRATION.md) — use Claude Code + Team subscription with local model routing
 - [Cursor BYOK setup (legacy)](docs/RUNBOOK-cursor-setup.md) — Ask/Plan-mode use case
 - [Architecture](docs/architecture.md) — components, ports, dataflow
 - [Routing](docs/routing.md) — decision tree + Cline-specific rules
