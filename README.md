@@ -479,56 +479,72 @@ for full details and the ToS compliance rationale.
 
 ## Two clients, one deployment
 
-A single MacM4 instance serves **both Cline and Claude Code at the same time**.
-The table below shows every wiring option — what to configure in the client,
-what port it hits, how tokens are routed, and which auth credential is used.
+A single MacM4 instance serves both **Cline** and **Claude Code** simultaneously.
+They connect on separate ports so their auth paths never mix.
 
-### Wiring reference
+---
 
-| Client      | IDE setting / env var                                      | Port  | Context tier | Routed to                          | Auth used                      | Cost              |
-| ----------- | ---------------------------------------------------------- | ----- | ------------ | ---------------------------------- | ------------------------------ | ----------------- |
-| **Cline**   | Base URL `http://127.0.0.1:4000/v1` · Model `gpt-hybrid-auto` | :4000 | ≤16 k tokens | MLX :8081 (local-fast)             | none (loopback)                | free              |
-| **Cline**   | Base URL `http://127.0.0.1:4000/v1` · Model `gpt-hybrid-auto` | :4000 | 16 k–128 k   | Ollama :11434 (local-long)         | none (loopback)                | free              |
-| **Cline**   | Base URL `http://127.0.0.1:4000/v1` · Model `gpt-hybrid-auto` | :4000 | >128 k or complex | Anthropic API                  | `ANTHROPIC_API_KEY`            | pay-per-token     |
-| **Cline**   | Prefix prompt with `[local]`                               | :4000 | any          | Ollama :11434 (forced)             | none (loopback)                | free              |
-| **Claude Code** | `ANTHROPIC_BASE_URL=http://127.0.0.1:4002`             | :4002 | ≤128 k tokens | Ollama :11434 (local-long)        | none (loopback)                | free              |
-| **Claude Code** | `ANTHROPIC_BASE_URL=http://127.0.0.1:4002` + `CLAUDE_PROXY_LARGE_CTX_MODE=passthrough` (default) | :4002 | >128 k tokens | Anthropic API | Claude Code Team OAuth token   | Team subscription (flat fee)  |
-| **Claude Code** | `ANTHROPIC_BASE_URL=http://127.0.0.1:4002` + `CLAUDE_PROXY_LARGE_CTX_MODE=apikey`               | :4002 | >128 k tokens | Anthropic API | `ANTHROPIC_API_KEY`            | pay-per-token     |
+### 1. Client setup — what to configure in your IDE / shell
 
-> **Key guarantee:** In `passthrough` mode (the default), `ANTHROPIC_API_KEY` is **never read or injected** for Claude Code large-context
-> requests. The proxy forwards Claude Code's own Team OAuth bearer token unchanged. To opt into API-key billing, set
-> `CLAUDE_PROXY_LARGE_CTX_MODE=apikey` in `config/detected.env` and run `make restart`.
+| Client | Where | Setting | Value |
+| --- | --- | --- | --- |
+| **Cline** | Extension gear → API Provider | — | OpenAI Compatible |
+| **Cline** | Extension gear → Base URL | — | `http://127.0.0.1:4000/v1` |
+| **Cline** | Extension gear → Model ID | — | `gpt-hybrid-auto` *(auto-routes; see table 2)* |
+| **Cline** | Extension gear → API Key | — | any non-empty string (e.g. `not-needed`) |
+| **Claude Code** | `~/.zshrc` + launchctl | `ANTHROPIC_BASE_URL` | `http://127.0.0.1:4002` |
+| **Claude Code** | `config/detected.env` *(optional)* | `CLAUDE_PROXY_LARGE_CTX_MODE` | `passthrough` (default) or `apikey` |
 
-### Client configuration summary
+---
 
-| Client      | Where to configure                       | Field / env var                                     | Value                           |
-| ----------- | ---------------------------------------- | --------------------------------------------------- | ------------------------------- |
-| **Cline**   | Cline extension settings (gear icon)     | API Provider                                        | OpenAI Compatible               |
-| **Cline**   | Cline extension settings (gear icon)     | Base URL                                            | `http://127.0.0.1:4000/v1`     |
-| **Cline**   | Cline extension settings (gear icon)     | Model ID                                            | `gpt-hybrid-auto`               |
-| **Cline**   | Cline extension settings (gear icon)     | API Key                                             | any non-empty string (e.g. `not-needed`) |
-| **Claude Code** | Shell profile (`~/.zshrc`)           | `ANTHROPIC_BASE_URL`                                | `http://127.0.0.1:4002`        |
-| **Claude Code** | Shell profile (`~/.zshrc`)           | `launchctl setenv ANTHROPIC_BASE_URL`               | `http://127.0.0.1:4002`        |
-| **Claude Code** | `config/detected.env` (optional)     | `CLAUDE_PROXY_LARGE_CTX_MODE`                       | `passthrough` (default) or `apikey` |
+### 2. Request routing — which model handles each request
 
-Both clients share the same local model pool (Ollama `:11434` / MLX `:8081`).
-The two ports are **architecturally isolated** — Cline's API-key path and
-Claude Code's Team OAuth path can never cross-contaminate.
+Both clients share the same decision logic: **token count** is measured first, then **task complexity**,
+then any explicit **prompt tag** you add.
 
-```
-Cline      ──► :4000 (LiteLLM)      ──► ≤128k: local (free)
-                                         >128k: Anthropic API (ANTHROPIC_API_KEY)
+| Prompt tag / condition | Token count | Local model | Cloud model | Cloud auth | Cost |
+| --- | --- | --- | --- | --- | --- |
+| *(auto, no tag)* | ≤ 16 k | **MLX** – Qwen2.5-Coder-7B-4bit (`:8081`) | — | — | free |
+| *(auto, no tag)* | 16 k – 128 k | **Ollama** – Qwen3-Coder-Next q4\_K\_M (`:11434`) | — | — | free |
+| *(auto, complex task)* | any | — | **claude-opus-4-7** | `ANTHROPIC_API_KEY` ¹ | ~$5/MTok in |
+| *(auto, >128 k)* – **Cline** | > 128 k | — | **claude-opus-4-7** | `ANTHROPIC_API_KEY` ¹ | ~$5/MTok in |
+| *(auto, >128 k)* – **Claude Code**, passthrough | > 128 k | — | whichever model Claude Code requested ² | Team OAuth token | Team subscription |
+| *(auto, >128 k)* – **Claude Code**, apikey | > 128 k | — | whichever model Claude Code requested ² | `ANTHROPIC_API_KEY` ¹ | ~$5/MTok in |
+| `[local]` *(Cline only)* | any | **Ollama** – Qwen3-Coder-Next (forced) | — | — | free |
+| `[haiku]` *(Cline only)* | any | — | **claude-haiku-4-5** | `ANTHROPIC_API_KEY` ¹ | ~$1/MTok in |
+| `[sonnet]` *(Cline only)* | any | — | **claude-sonnet-4-6** | `ANTHROPIC_API_KEY` ¹ | ~$3/MTok in |
+| `[opus]` *(Cline only)* | any | — | **claude-opus-4-7** | `ANTHROPIC_API_KEY` ¹ | ~$5/MTok in |
+| `[claude]` *(Cline only)* | any | — | **claude-opus-4-7** (default alias) | `ANTHROPIC_API_KEY` ¹ | ~$5/MTok in |
 
-Claude Code ──► :4002 (claude_proxy) ──► ≤128k: local (free, via :4000)
-                                          >128k passthrough: Anthropic API (Team OAuth)
-                                          >128k apikey:      Anthropic API (ANTHROPIC_API_KEY)
+> ¹ `ANTHROPIC_API_KEY` is set once in `~/.zshrc` + `launchctl setenv`. It is used by LiteLLM (Cline path) and
+> optionally by claude\_proxy (Claude Code apikey mode). It is **never** read on the Claude Code passthrough path.
+>
+> ² In passthrough mode, claude\_proxy forwards the request to Anthropic unchanged — the model name Claude Code picked
+> (e.g. `claude-opus-4-7`, `claude-sonnet-4-6`) is preserved. You control this inside Claude Code's own settings.
 
-                      ↓ shared backend
-              Ollama :11434  /  MLX :8081
-```
+---
 
-`make start` loads all five launchd services together — no extra steps needed.
+### 3. Claude Code large-context modes (>128 k tokens)
 
+| Mode | How to set | Auth sent to Anthropic | Billed to | When to use |
+| --- | --- | --- | --- | --- |
+| **passthrough** *(default)* | `CLAUDE_PROXY_LARGE_CTX_MODE=passthrough` in `config/detected.env` | Claude Code's own Team OAuth bearer token | Claude Team subscription (flat fee) | You have a Claude Team plan and want large-context work billed there |
+| **apikey** | `CLAUDE_PROXY_LARGE_CTX_MODE=apikey` in `config/detected.env` | `ANTHROPIC_API_KEY` | Anthropic API account (pay-per-token) | You want separate billing or don't have a Team subscription |
+
+Apply a mode change with `make restart` (no reinstall needed).
+
+---
+
+### 4. Available local models
+
+| Tier | Model | Approx size on disk | Context window | Used when |
+| --- | --- | --- | --- | --- |
+| **local-fast** | `mlx-community/Qwen2.5-Coder-7B-Instruct-4bit` (MLX, `:8081`) | ~5 GB | 16 k tokens | prompt ≤ 16 k, not complex |
+| **local-long** | `qwen3-coder-next:q4_K_M` (Ollama GGUF, `:11434`) | ~45 GB | ~64 k tokens | 16 k < prompt ≤ 128 k, or any Claude Code small request |
+
+Both are downloaded automatically by `make install`. Use `[local]` in a Cline prompt to force local-long
+regardless of token count. Claude Code requests ≤ 128 k always use local-long (MLX is structurally
+unreachable from Claude Code because its system prompt alone exceeds 16 k tokens).
 
 ---
 
