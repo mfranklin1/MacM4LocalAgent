@@ -1,0 +1,64 @@
+---
+description: How to create and remove git worktrees in this repo so the Cursor workspace file stays in sync
+alwaysApply: false
+---
+
+# Worktree workflow for MacM4LocalAgent
+
+Always use the Makefile targets below instead of raw `git worktree add / remove` commands.
+They call `scripts/workspace-sync.py` automatically, which keeps
+`MacM4LocalAgent.code-workspace` in step with the live worktree list so
+Cursor's `Cmd+P` searches across every active tree.
+
+## Creating a worktree
+
+```bash
+make worktree BRANCH=feat/my-feature
+```
+
+This:
+1. Creates the branch `feat/my-feature` (or checks it out if it already exists)
+2. Adds the worktree at `.worktrees/my-feature`
+3. Rewrites `MacM4LocalAgent.code-workspace` to include the new folder
+
+Open `MacM4LocalAgent.code-workspace` once (File → Open Workspace from File…)
+and Cursor will remember it. After that, each `make worktree` / `make worktree-rm`
+updates the file in place — no manual editor action needed.
+
+## Removing a worktree (after a PR is merged)
+
+```bash
+make worktree-rm BRANCH=feat/my-feature
+```
+
+This removes `.worktrees/my-feature`, prunes stale refs, and removes the
+folder from `MacM4LocalAgent.code-workspace`.
+
+## Repair after a manual git op
+
+If you ran `git worktree add/remove` directly:
+
+```bash
+make worktree-sync
+```
+
+## Listing active worktrees
+
+```bash
+make worktree-list
+# or
+git worktree list
+```
+
+## Rules
+
+- **Never** use `git worktree add` or `git worktree remove` directly in this
+  repo — always go through `make worktree` / `make worktree-rm` so the
+  workspace file stays current.
+- Worktrees live under `.worktrees/<branch-slug>/` inside the repo by default.
+  External worktrees (sibling directories) are supported and appear in the
+  workspace file with their absolute path.
+- The workspace file `MacM4LocalAgent.code-workspace` is committed to the repo.
+  Changes to it (worktree additions/removals) are intentionally not staged
+  automatically — commit the updated file when it changes meaningfully
+  (e.g. a new long-lived branch).
