@@ -479,27 +479,55 @@ for full details and the ToS compliance rationale.
 
 ## Two clients, one deployment
 
-A single MacM4 instance handles **both Cline and Claude Code simultaneously**:
+A single MacM4 instance serves **both Cline and Claude Code at the same time**.
+The table below shows every wiring option — what to configure in the client,
+what port it hits, how tokens are routed, and which auth credential is used.
 
-| Client      | Port  | Auth for large-context      | Format    |
-| ----------- | ----- | --------------------------- | --------- |
-| Cline       | :4000 | `ANTHROPIC_API_KEY`         | OpenAI    |
-| Claude Code | :4002 | Team OAuth (passthrough)    | Anthropic |
+### Wiring reference
 
-The two ports are **architecturally isolated** — Cline never reaches the
-OAuth passthrough path, and Claude Code never passes through the API-key
-LiteLLM path. Both clients share the same free local model pool
-(Ollama / MLX on `:11434` / `:8081`) for small-context requests.
+| Client      | IDE setting / env var                                      | Port  | Context tier | Routed to                          | Auth used                      | Cost              |
+| ----------- | ---------------------------------------------------------- | ----- | ------------ | ---------------------------------- | ------------------------------ | ----------------- |
+| **Cline**   | Base URL `http://127.0.0.1:4000/v1` · Model `gpt-hybrid-auto` | :4000 | ≤16 k tokens | MLX :8081 (local-fast)             | none (loopback)                | free              |
+| **Cline**   | Base URL `http://127.0.0.1:4000/v1` · Model `gpt-hybrid-auto` | :4000 | 16 k–128 k   | Ollama :11434 (local-long)         | none (loopback)                | free              |
+| **Cline**   | Base URL `http://127.0.0.1:4000/v1` · Model `gpt-hybrid-auto` | :4000 | >128 k or complex | Anthropic API                  | `ANTHROPIC_API_KEY`            | pay-per-token     |
+| **Cline**   | Prefix prompt with `[local]`                               | :4000 | any          | Ollama :11434 (forced)             | none (loopback)                | free              |
+| **Claude Code** | `ANTHROPIC_BASE_URL=http://127.0.0.1:4002`             | :4002 | ≤128 k tokens | Ollama :11434 (local-long)        | none (loopback)                | free              |
+| **Claude Code** | `ANTHROPIC_BASE_URL=http://127.0.0.1:4002` + `CLAUDE_PROXY_LARGE_CTX_MODE=passthrough` (default) | :4002 | >128 k tokens | Anthropic API | Claude Code Team OAuth token   | Team subscription (flat fee)  |
+| **Claude Code** | `ANTHROPIC_BASE_URL=http://127.0.0.1:4002` + `CLAUDE_PROXY_LARGE_CTX_MODE=apikey`               | :4002 | >128 k tokens | Anthropic API | `ANTHROPIC_API_KEY`            | pay-per-token     |
+
+> **Key guarantee:** In `passthrough` mode (the default), `ANTHROPIC_API_KEY` is **never read or injected** for Claude Code large-context
+> requests. The proxy forwards Claude Code's own Team OAuth bearer token unchanged. To opt into API-key billing, set
+> `CLAUDE_PROXY_LARGE_CTX_MODE=apikey` in `config/detected.env` and run `make restart`.
+
+### Client configuration summary
+
+| Client      | Where to configure                       | Field / env var                                     | Value                           |
+| ----------- | ---------------------------------------- | --------------------------------------------------- | ------------------------------- |
+| **Cline**   | Cline extension settings (gear icon)     | API Provider                                        | OpenAI Compatible               |
+| **Cline**   | Cline extension settings (gear icon)     | Base URL                                            | `http://127.0.0.1:4000/v1`     |
+| **Cline**   | Cline extension settings (gear icon)     | Model ID                                            | `gpt-hybrid-auto`               |
+| **Cline**   | Cline extension settings (gear icon)     | API Key                                             | any non-empty string (e.g. `not-needed`) |
+| **Claude Code** | Shell profile (`~/.zshrc`)           | `ANTHROPIC_BASE_URL`                                | `http://127.0.0.1:4002`        |
+| **Claude Code** | Shell profile (`~/.zshrc`)           | `launchctl setenv ANTHROPIC_BASE_URL`               | `http://127.0.0.1:4002`        |
+| **Claude Code** | `config/detected.env` (optional)     | `CLAUDE_PROXY_LARGE_CTX_MODE`                       | `passthrough` (default) or `apikey` |
+
+Both clients share the same local model pool (Ollama `:11434` / MLX `:8081`).
+The two ports are **architecturally isolated** — Cline's API-key path and
+Claude Code's Team OAuth path can never cross-contaminate.
 
 ```
-Cline  ──► :4000 (LiteLLM)  ──► local or ANTHROPIC_API_KEY
-Claude Code ──► :4002 (claude_proxy) ──► local or Team OAuth
-                                   ↓ (shared)
-                            Ollama :11434 / MLX :8081
+Cline      ──► :4000 (LiteLLM)      ──► ≤128k: local (free)
+                                         >128k: Anthropic API (ANTHROPIC_API_KEY)
+
+Claude Code ──► :4002 (claude_proxy) ──► ≤128k: local (free, via :4000)
+                                          >128k passthrough: Anthropic API (Team OAuth)
+                                          >128k apikey:      Anthropic API (ANTHROPIC_API_KEY)
+
+                      ↓ shared backend
+              Ollama :11434  /  MLX :8081
 ```
 
-No configuration is needed beyond the two env vars above. `make start`
-loads all five launchd services together.
+`make start` loads all five launchd services together — no extra steps needed.
 
 
 ---
