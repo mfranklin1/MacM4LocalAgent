@@ -1,18 +1,25 @@
 #!/usr/bin/env bash
-# install-cline.sh - Install the Cline extension (saoudrizwan.claude-dev)
-# into whichever supported IDE is on this Mac.
+# install-cline.sh - Install the MacM4-patched Cline extension into
+# whichever supported IDE is on this Mac.
 #
-# Detection order:
-#   1. Cursor   (preferred -- this project's documented integration path)
-#   2. VS Code
+# Source preference (in order):
+#   1. GCS artifact  gs://cline-repo/cline-macm4/cline-macm4-latest.vsix
+#      (built from the integration/macm4-enhancements branch; publisher
+#       martinfr-certifyos; includes Ollama tag fix + MacM4 provider)
+#   2. Upstream marketplace  saoudrizwan.claude-dev  (fallback, no MacM4 patches)
 #
-# Falls back to printing manual GUI / marketplace instructions if neither
-# CLI is on PATH or in /Applications. Idempotent: re-running upgrades to
-# the latest published version of the extension.
+# IDE detection order:
+#   1. VS Code  (preferred for local MacM4 stack -- no Cursor SSRF gateway)
+#   2. Cursor
+#
+# Idempotent: re-running reinstalls / upgrades to the latest VSIX.
 set -euo pipefail
 
-EXT_ID="saoudrizwan.claude-dev"
-MARKETPLACE_URL="https://marketplace.visualstudio.com/items?itemName=${EXT_ID}"
+GCS_BUCKET="cline-repo"
+GCS_VSIX_PATH="gs://${GCS_BUCKET}/cline-macm4/cline-macm4-latest.vsix"
+EXT_ID_PATCHED="martinfr-certifyos.claude-dev"
+EXT_ID_UPSTREAM="saoudrizwan.claude-dev"
+MARKETPLACE_URL="https://marketplace.visualstudio.com/items?itemName=${EXT_ID_UPSTREAM}"
 
 log()  { printf "\033[1;34m[cline]\033[0m %s\n" "$*"; }
 ok()   { printf "\033[1;32m[cline]\033[0m %s\n" "$*"; }
@@ -37,49 +44,42 @@ resolve_cli() {
 CURSOR_CLI="$(resolve_cli "Cursor" "cursor")"
 VSCODE_CLI="$(resolve_cli "Visual Studio Code" "code")"
 
-# Pick the first IDE we found. User can override with IDE=cursor|code.
+# Prefer VS Code for the local MacM4 stack (no Cursor SSRF gateway issues).
+# User can override with IDE=cursor|code.
 case "${IDE:-auto}" in
   cursor) PICKED="$CURSOR_CLI"; IDE_NAME="Cursor" ;;
   code|vscode)
           PICKED="$VSCODE_CLI"; IDE_NAME="Visual Studio Code" ;;
   auto)
-    if [[ -n "$CURSOR_CLI" ]]; then
-      PICKED="$CURSOR_CLI"; IDE_NAME="Cursor"
-    elif [[ -n "$VSCODE_CLI" ]]; then
+    if [[ -n "$VSCODE_CLI" ]]; then
       PICKED="$VSCODE_CLI"; IDE_NAME="Visual Studio Code"
+    elif [[ -n "$CURSOR_CLI" ]]; then
+      PICKED="$CURSOR_CLI"; IDE_NAME="Cursor"
     else
       PICKED=""
     fi
     ;;
   *) warn "IDE=$IDE not recognized (use cursor or code); falling back to auto"
-     PICKED="${CURSOR_CLI:-$VSCODE_CLI}"
-     IDE_NAME="$( [[ -n "$CURSOR_CLI" ]] && echo Cursor || echo "Visual Studio Code" )"
+     PICKED="${VSCODE_CLI:-$CURSOR_CLI}"
+     IDE_NAME="$( [[ -n "$VSCODE_CLI" ]] && echo "Visual Studio Code" || echo Cursor )"
      ;;
 esac
 
 if [[ -z "$PICKED" ]]; then
-  warn "Couldn't find a Cursor or VS Code CLI on this Mac."
+  warn "Couldn't find a VS Code or Cursor CLI on this Mac."
   cat <<EOF >&2
 
   Neither of these worked:
-    - 'cursor' on PATH   (or /Applications/Cursor.app/Contents/Resources/app/bin/cursor)
-    - 'code' on PATH     (or /Applications/Visual Studio Code.app/Contents/Resources/app/bin/code)
+    - 'code' on PATH   (or /Applications/Visual Studio Code.app/Contents/Resources/app/bin/code)
+    - 'cursor' on PATH (or /Applications/Cursor.app/Contents/Resources/app/bin/cursor)
 
-  Install one of these, then re-run \`make cline\`:
+  Install VS Code (preferred), then re-run \`make cline\`:
+    Download: https://code.visualstudio.com
 
-    Cursor (recommended):
-      Download:        https://cursor.com
-      After install, no extra setup needed -- the .app ships the CLI.
-
-    VS Code:
-      Download:        https://code.visualstudio.com
-      After install:   open VS Code, Cmd+Shift+P,
-                       'Shell Command: Install code command in PATH'
-
-  Or install Cline manually via the marketplace GUI:
+  Or install Cline manually from the marketplace GUI:
     1. Open the IDE -> Extensions tab (Cmd+Shift+X).
     2. Search for "Cline".
-    3. Click Install on "Cline" by saoudrizwan.
+    3. Click Install.
     Marketplace listing: ${MARKETPLACE_URL}
 
 EOF
@@ -87,23 +87,55 @@ EOF
 fi
 
 log "using ${IDE_NAME} CLI: $PICKED"
-log "installing $EXT_ID ..."
-if "$PICKED" --install-extension "$EXT_ID"; then
-  ok "Cline installed/upgraded in ${IDE_NAME}."
-  echo ""
-  echo "  Next steps:"
-  echo "    1. Quit and relaunch ${IDE_NAME} so the activation hook fires."
-  echo "    2. Click the Cline icon in the left sidebar (robot/chat bubble)."
-  echo "    3. Gear icon -> API Configuration:"
-  echo "         API Provider : OpenAI Compatible"
-  echo "         Base URL     : http://127.0.0.1:4000/v1"
-  echo "         API Key      : any non-empty string  (e.g. not-needed)"
-  echo "         Model ID     : gpt-hybrid-auto"
-  echo "    4. Try: 'Read README.md and summarize it in one sentence.'"
-  echo ""
-  echo "  Full walkthrough: docs/RUNBOOK-cline-setup.md"
+
+# ── Try GCS VSIX first (MacM4-patched build) ──────────────────────────────
+VSIX_TMP=""
+if command -v gsutil >/dev/null 2>&1; then
+  VSIX_TMP="$(mktemp /tmp/cline-macm4-XXXXXX.vsix)"
+  log "downloading MacM4 VSIX from ${GCS_VSIX_PATH} ..."
+  if gsutil cp "${GCS_VSIX_PATH}" "${VSIX_TMP}" 2>/dev/null; then
+    log "installing MacM4-patched Cline (${EXT_ID_PATCHED}) into ${IDE_NAME} ..."
+    if "$PICKED" --install-extension "${VSIX_TMP}"; then
+      ok "MacM4-patched Cline installed in ${IDE_NAME}."
+      rm -f "${VSIX_TMP}"
+      INSTALLED_ID="${EXT_ID_PATCHED}"
+    else
+      warn "VSIX install failed; falling back to marketplace."
+      rm -f "${VSIX_TMP}"; VSIX_TMP=""
+    fi
+  else
+    warn "GCS download failed (gsutil auth issue?); falling back to marketplace."
+    rm -f "${VSIX_TMP}"; VSIX_TMP=""
+  fi
 else
-  warn "extension install failed via CLI."
-  echo "  Try the marketplace GUI instead: ${MARKETPLACE_URL}" >&2
-  exit 1
+  warn "gsutil not found; installing upstream Cline from marketplace (no MacM4 patches)."
 fi
+
+# ── Marketplace fallback ──────────────────────────────────────────────────
+if [[ -z "${INSTALLED_ID:-}" ]]; then
+  log "installing upstream ${EXT_ID_UPSTREAM} from marketplace ..."
+  if "$PICKED" --install-extension "${EXT_ID_UPSTREAM}"; then
+    ok "Upstream Cline installed in ${IDE_NAME}."
+    INSTALLED_ID="${EXT_ID_UPSTREAM}"
+  else
+    warn "Extension install failed."
+    echo "  Try the marketplace GUI instead: ${MARKETPLACE_URL}" >&2
+    exit 1
+  fi
+fi
+
+echo ""
+echo "  Installed: ${INSTALLED_ID}"
+echo ""
+echo "  Next steps:"
+echo "    1. Quit and relaunch ${IDE_NAME} so the activation hook fires."
+echo "    2. Click the Cline icon in the left sidebar (robot/chat bubble)."
+echo "    3. Gear icon -> API Configuration:"
+echo "         API Provider : OpenAI Compatible"
+echo "         Base URL     : http://127.0.0.1:4000/v1"
+echo "         API Key      : any non-empty string  (e.g. not-needed)"
+echo "         Model ID     : gpt-hybrid-auto"
+echo "         Native Tool Calling: OFF"
+echo "    4. Try: 'Read README.md and summarize it in one sentence.'"
+echo ""
+echo "  Full walkthrough: docs/RUNBOOK-cline-setup.md"

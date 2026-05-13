@@ -25,7 +25,7 @@ This document captures the working configuration on this machine.
 | `local-agent` model | `llama3.1:8b-instruct-q8_0` pulled in Ollama | `ollama list \| grep llama3.1` |
 | LiteLLM model alias | `gpt-local-agent` exposed | `grep "model_name: gpt-local-agent" config/litellm-config.rendered.yaml` |
 | Cursor IDE | 3.1.x | Cursor menu → About |
-| Cline extension | Installed in Cursor's extension list | `ls ~/.cursor/extensions/saoudrizwan.claude-dev*` |
+| Cline extension | Installed in VS Code (MacM4-patched build from GCS) | `ls ~/.vscode/extensions/martinfr-certifyos.claude-dev*` |
 
 > **Tailscale is NOT required for Cline.** Cline runs inside Cursor's
 > extension host (a Node.js process on your Mac) and calls the proxy
@@ -42,22 +42,41 @@ work around an offline proxy or a missing model.
 
 ---
 
-## 1. Install the Cline extension into Cursor
+## 1. Install the Cline extension into VS Code
+
+The recommended path is the MacM4-patched build from GCS, which includes
+the Ollama tag fix and MacM4 provider. Use the install script:
 
 ```bash
-/Applications/Cursor.app/Contents/Resources/app/bin/cursor \
-  --install-extension saoudrizwan.claude-dev
+make cline          # auto-detects VS Code / Cursor, prefers GCS VSIX
+# or manually:
+IDE=code make cline
 ```
 
-This pulls Cline 3.81.0 (or current) from the marketplace and lands
-it in `~/.cursor/extensions/saoudrizwan.claude-dev-<version>-universal/`.
+The script downloads `gs://cline-repo/cline-macm4/cline-macm4-latest.vsix`
+via `gsutil` and installs it. The installed extension ID is
+`martinfr-certifyos.claude-dev`, landing in
+`~/.vscode/extensions/martinfr-certifyos.claude-dev-<version>/`.
 
-> **Why not VSCode?** We considered installing a separate VSCode just
-> for Cline. Skipped because Cursor is itself a VSCode fork and runs
-> Cline cleanly. One IDE on disk; no second toolchain. The marketplace
-> Cursor uses mirrors most VSCode extensions, including Cline.
+If `gsutil` is not available or the GCS download fails, the script falls
+back to the upstream marketplace extension (`saoudrizwan.claude-dev`),
+which lacks the MacM4 patches but is otherwise functional.
 
-After install, **fully quit and relaunch Cursor** so the extension's
+**Manual install** (if `make cline` is not available):
+```bash
+gsutil cp gs://cline-repo/cline-macm4/cline-macm4-latest.vsix /tmp/cline-macm4.vsix
+"/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code" \
+  --install-extension /tmp/cline-macm4.vsix
+```
+
+> **Why VS Code instead of Cursor?** Cursor 3.1.17's agent mode is locked
+> to first-party models and its BYOK provider routes through
+> `api2.cursor.sh`, whose SSRF policy blocks loopback (`127.0.0.1`).
+> VS Code has no such restriction — Cline's extension host calls the proxy
+> directly over loopback. See `RUNBOOK-cursor-setup.md` for the full
+> architectural finding.
+
+After install, **fully quit and relaunch VS Code** so the extension's
 activation hooks fire on the next start.
 
 ---
