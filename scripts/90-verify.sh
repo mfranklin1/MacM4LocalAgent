@@ -27,10 +27,11 @@ probe_port() {
 
 echo
 echo "== Port health =="
-probe_port "$OLLAMA_PORT"    "ollama"
-probe_port "$MLX_PORT"       "mlx_lm.server"
-probe_port "$LITELLM_PORT"   "litellm"
-probe_port "$DASHBOARD_PORT" "dashboard"
+probe_port "$OLLAMA_PORT"                       "ollama"
+probe_port "$MLX_PORT"                          "mlx_lm.server"
+probe_port "$LITELLM_PORT"                      "litellm"
+probe_port "$DASHBOARD_PORT"                    "dashboard"
+probe_port "${CLAUDE_PROXY_PORT:-4002}"         "claude-proxy"
 
 echo
 echo "== Ollama KV cache =="
@@ -88,6 +89,31 @@ else
     f16) ;;  # not required when uncompressed
     *) fail "OLLAMA_FLASH_ATTENTION not set; $EFFECTIVE_KV needs it to apply" ;;
   esac
+fi
+
+echo
+echo "== claude-proxy health =="
+PROXY_PORT="${CLAUDE_PROXY_PORT:-4002}"
+PROXY_RESP="$(curl -fsS "http://127.0.0.1:${PROXY_PORT}/health" 2>/dev/null || true)"
+if [[ -n "$PROXY_RESP" ]]; then
+  PROXY_STATUS="$(echo "$PROXY_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','?'))" 2>/dev/null || true)"
+  PROXY_MODE="$(echo "$PROXY_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('large_ctx_mode','?'))" 2>/dev/null || true)"
+  if [[ "$PROXY_STATUS" == "ok" ]]; then
+    ok "claude-proxy /health → status=ok large_ctx_mode=${PROXY_MODE}"
+    if [[ "$PROXY_MODE" == "passthrough" ]]; then
+      ok "claude-proxy large-ctx uses Team OAuth (no ANTHROPIC_API_KEY needed)"
+    elif [[ "$PROXY_MODE" == "apikey" ]]; then
+      if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+        ok "claude-proxy large-ctx uses ANTHROPIC_API_KEY (apikey mode)"
+      else
+        fail "claude-proxy large_ctx_mode=apikey but ANTHROPIC_API_KEY is not set"
+      fi
+    fi
+  else
+    fail "claude-proxy /health returned unexpected status: $PROXY_STATUS"
+  fi
+else
+  fail "could not reach claude-proxy /health on :${PROXY_PORT}"
 fi
 
 echo

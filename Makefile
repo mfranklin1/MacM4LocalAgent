@@ -6,9 +6,9 @@ REPO_ROOT := $(shell pwd)
 SCRIPTS := $(REPO_ROOT)/scripts
 LAUNCHD_DIR := $(REPO_ROOT)/launchd
 LAUNCH_AGENTS := $(HOME)/Library/LaunchAgents
-PLISTS := com.local.ollama com.local.mlx com.local.litellm com.local.dashboard com.local.ollama-warm com.local.watchdog
+PLISTS := com.local.ollama com.local.mlx com.local.litellm com.local.dashboard com.local.ollama-warm com.local.watchdog com.local.claude-proxy
 
-.PHONY: help detect install start stop restart status dashboard verify watchdog report compare clean nuke test test-py test-sh lint finalize downloads downloads-watch wait-and-finalize resume-ollama bench bench-local bench-claude bench-cursor bench-report bench-pull-spend turboquant-status turboquant-upgrade turboquant-watch turboquant-experimental-build turboquant-experimental-serve turboquant-experimental-stop turboquant-experimental-status turboquant-experimental-ab turboquant-experimental-nuke perf perf-short perf-stress perf-prefix perf-prefix-cold check-pricing cline warm offline online offline-status
+.PHONY: help detect install start stop restart status dashboard verify watchdog report compare clean nuke test test-py test-sh lint finalize downloads downloads-watch wait-and-finalize resume-ollama bench bench-local bench-claude bench-cursor bench-report bench-pull-spend turboquant-status turboquant-upgrade turboquant-watch turboquant-experimental-build turboquant-experimental-serve turboquant-experimental-stop turboquant-experimental-status turboquant-experimental-ab turboquant-experimental-nuke perf perf-short perf-stress perf-prefix perf-prefix-cold check-pricing cline warm offline online offline-status worktree worktree-rm worktree-sync worktree-list
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -85,7 +85,7 @@ restart: stop start ## Restart all services
 status: ## Show running ports
 	@echo "Port  Service        Status"
 	@echo "----  -------------  ------"
-	@for entry in "11434 ollama" "8081 mlx" "4000 litellm" "4001 dashboard"; do \
+	@for entry in "11434 ollama" "8081 mlx" "4000 litellm" "4001 dashboard" "4002 claude-proxy"; do \
 	  port="$${entry%% *}"; name="$${entry##* }"; \
 	  if lsof -nP -iTCP:$$port -sTCP:LISTEN >/dev/null 2>&1; then \
 	    echo "$$port  $$name        UP"; \
@@ -136,6 +136,43 @@ compare: ## Run an A/B comparison: make compare PROMPT="..."
 	@if [ -z "$${PROMPT:-}" ]; then echo 'Usage: make compare PROMPT="..."'; exit 1; fi
 	@. $(REPO_ROOT)/.venvs/litellm/bin/activate 2>/dev/null || true; \
 	python3 $(REPO_ROOT)/compare/ab.py "$${PROMPT}"
+
+# ---------- worktree management (auto-syncs MacM4LocalAgent.code-workspace) ----------
+#
+# Always use these targets instead of raw `git worktree add/remove` so the
+# .code-workspace file stays in step and Cursor's Cmd+P sees every tree.
+#
+# Usage:
+#   make worktree BRANCH=feat/my-thing   # create branch + worktree + sync workspace
+#   make worktree-rm BRANCH=feat/my-thing # remove worktree + sync workspace
+#   make worktree-sync                    # repair workspace after a manual git op
+#   make worktree-list                    # show all worktrees
+
+BRANCH ?=
+
+worktree: ## Create a branch + worktree and add to .code-workspace  [BRANCH=name]
+	@if [ -z "$(BRANCH)" ]; then echo "Usage: make worktree BRANCH=<branch-name>"; exit 1; fi
+	@SLUG=$$(echo "$(BRANCH)" | sed 's|.*/||'); \
+	 DIR="$(REPO_ROOT)/.worktrees/$$SLUG"; \
+	 git worktree add -b "$(BRANCH)" "$$DIR" 2>/dev/null || git worktree add "$$DIR" "$(BRANCH)"; \
+	 python3 $(SCRIPTS)/workspace-sync.py; \
+	 echo ""; \
+	 echo "Worktree ready: $$DIR"; \
+	 echo "Open MacM4LocalAgent.code-workspace in Cursor for Cmd+P across both trees."
+
+worktree-rm: ## Remove a worktree and update .code-workspace  [BRANCH=name]
+	@if [ -z "$(BRANCH)" ]; then echo "Usage: make worktree-rm BRANCH=<branch-name>"; exit 1; fi
+	@SLUG=$$(echo "$(BRANCH)" | sed 's|.*/||'); \
+	 DIR="$(REPO_ROOT)/.worktrees/$$SLUG"; \
+	 git worktree remove "$$DIR" --force 2>/dev/null || true; \
+	 git worktree prune; \
+	 python3 $(SCRIPTS)/workspace-sync.py
+
+worktree-sync: ## Sync .code-workspace to match current git worktrees (repair after manual ops)
+	@python3 $(SCRIPTS)/workspace-sync.py
+
+worktree-list: ## List all active worktrees
+	@git worktree list
 
 clean: stop ## Stop services and remove venvs (keeps models)
 	@rm -rf $(REPO_ROOT)/.venvs

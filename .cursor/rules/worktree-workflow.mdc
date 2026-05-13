@@ -1,0 +1,61 @@
+---
+description: How to create and remove git worktrees so the Cursor workspace file stays in sync automatically
+alwaysApply: false
+---
+
+# Worktree workflow
+
+A global shell wrapper (`gwt`) and a standalone script (`cursor-workspace-sync`)
+keep the `<repo>.code-workspace` file in step with the live worktree list.
+This works in **any git repo** — no Makefile or per-repo setup required.
+
+## One-time install (already done on this machine)
+
+```bash
+bash ~/MacM4LocalAgent/scripts/install-worktree-sync.sh
+source ~/.zshrc
+```
+
+This installs `~/.local/bin/cursor-workspace-sync` and adds the `gwt`
+shell function to `~/.zshrc`.
+
+## Creating a worktree
+
+```bash
+gwt add .worktrees/<slug> <branch>
+# or for a new branch:
+gwt add -b <branch> .worktrees/<slug>
+```
+
+Example:
+```bash
+gwt add .worktrees/feat-auth feat/CP-1234-auth
+```
+
+This runs `git worktree add` then immediately calls `cursor-workspace-sync`,
+which rewrites `<repo>.code-workspace` to include the new folder.
+
+## Removing a worktree (after PR is merged)
+
+```bash
+gwt rm .worktrees/<slug>
+```
+
+Runs `git worktree remove` then resyncs the workspace file.
+
+## Manual repair
+
+If you ran `git worktree` directly by mistake:
+
+```bash
+cursor-workspace-sync
+```
+
+## Rules
+
+- Always use `gwt add` / `gwt rm` instead of `git worktree add` / `git worktree remove`
+  so the workspace file is never stale.
+- Open `<repo>.code-workspace` in Cursor once (File → Open Workspace from File…).
+  After that, `gwt` keeps it current with no further editor action.
+- Worktrees placed inside the repo (e.g. `.worktrees/`) appear with a relative path.
+  External sibling worktrees appear with their absolute path. Both work fine in Cursor.

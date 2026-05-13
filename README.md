@@ -161,10 +161,8 @@ depends on:
 
 - `OLLAMA_TAG` — which Qwen3-Coder-Next GGUF to pull (e.g.
   `qwen3-coder-next:q4_K_M` on a 64-128 GB M-series).
-- `KV_CACHE_TYPE` — the strongest KV-cache compression your installed
-  Ollama supports (today: `q4_0`, ~4×). See
-  [docs/turboquant.md](docs/turboquant.md) for what this becomes when
-  upstream lands `tq3`.
+- `KV_CACHE_TYPE` — the KV-cache compression type your installed Ollama
+  supports. On all current Ollama releases this is `q4_0` (~4× compression).
 - `LOCAL_LONG_CTX` — usable context ceiling for the Ollama tier
   (today: 65 536 = 64 k).
 - Ports for LiteLLM (`4000`), MLX (`8081`), Ollama (`11434`), dashboard
@@ -227,14 +225,15 @@ make start
 Copies the four rendered plists to `~/Library/LaunchAgents/` and
 `launchctl load`s each one:
 
-| Plist                       | What it runs                            | Port  |
-| --------------------------- | --------------------------------------- | ----- |
-| `com.local.ollama.plist`    | `ollama serve`                          | 11434 |
-| `com.local.mlx.plist`       | `mlx_lm.server` (from `.venvs/mlx`)     | 8081  |
-| `com.local.litellm.plist`   | `python scripts/run_litellm.py …`       | 4000  |
-| `com.local.dashboard.plist` | `python -m dashboard.server` (FastAPI)  | 4001  |
+| Plist                             | What it runs                            | Port  | Client      |
+| ---------------------------------- | --------------------------------------- | ----- | ----------- |
+| `com.local.ollama.plist`           | `ollama serve`                          | 11434 | shared      |
+| `com.local.mlx.plist`             | `mlx_lm.server` (from `.venvs/mlx`)     | 8081  | shared      |
+| `com.local.litellm.plist`         | `python scripts/run_litellm.py …`       | 4000  | Cline       |
+| `com.local.dashboard.plist`       | `python -m dashboard.server` (FastAPI)  | 4001  | browser     |
+| `com.local.claude-proxy.plist`    | `python claude_proxy/server.py …`       | 4002  | Claude Code |
 
-All four bind to `127.0.0.1` only.
+All five bind to `127.0.0.1` only. Cline uses `:4000`; Claude Code uses `:4002`. The ports are isolated by design — see [Two clients, one deployment](#two-clients-one-deployment) below.
 
 ### 6. Wait for downloads, then verify
 
@@ -257,6 +256,10 @@ Port  Service        Status
 8081  mlx            UP
 4000  litellm        UP
 4001  dashboard      UP
+4002  claude-proxy   UP
+== claude-proxy health ==
+  PASS  claude-proxy /health → status=ok large_ctx_mode=passthrough
+  PASS  claude-proxy large-ctx uses Team OAuth (no ANTHROPIC_API_KEY needed)
 == LiteLLM model registry ==
   local-fast OK
   local-long OK
@@ -265,85 +268,40 @@ Port  Service        Status
   …
 ```
 
-If `claude-code` reports an error, check `launchctl getenv ANTHROPIC_API_KEY`
-returns your key (step 2.3 above).
+If `claude-code` (LiteLLM/Cline tier) reports an error, check
+`launchctl getenv ANTHROPIC_API_KEY` returns your key (step 2.3 above).
+If `claude-proxy` shows DOWN, run `make restart` — it starts with the
+other services automatically after `make install`.
 
 ### 7. Install the Cline extension
 
-Cline is **not** installed by `make install`. It's an IDE-side extension
-(it lives in your Cursor / VS Code user profile, not in this repo's
-venv). Use one of the paths below.
+This project uses the **CertifyOS macm4 fork of Cline** — a customised
+build that ships with local-agent routing fixes and CertifyOS governance
+rules pre-loaded. The VSIX is pulled from GCS on every install; it is
+**never installed from the VS Marketplace**.
 
-#### Easiest: `make cline`
+Full install instructions (prerequisites, script options, post-install
+configuration, and upgrade steps) are in the fork's README:
 
-```bash
-make cline
-```
+**[github.com/martinfr-certifyos/cline → macm4 Install & Setup](https://github.com/martinfr-certifyos/cline#macm4-fork--install--setup)**
 
-This runs [`scripts/install-cline.sh`](scripts/install-cline.sh), which:
-
-1. Looks for the `cursor` CLI on PATH, then for
-   `/Applications/Cursor.app/Contents/Resources/app/bin/cursor`.
-2. If neither is found, falls back to the `code` CLI for VS Code
-   (then `/Applications/Visual Studio Code.app/.../bin/code`).
-3. Runs `<cli> --install-extension saoudrizwan.claude-dev`.
-4. Prints the next steps (relaunch, gear icon, etc.).
-
-Force a specific IDE: `IDE=cursor make cline` or `IDE=code make cline`.
-
-If neither IDE is installed yet, the script prints the download URLs and
-exits cleanly so you can install the IDE first and re-run `make cline`.
-
-#### Manual: CLI
-
-If you'd rather run the install command yourself:
-
-**Cursor** (recommended — this project's documented integration path):
+Quick-start (assumes `gcloud` is authenticated and your IDE is installed):
 
 ```bash
-# Either form works:
-cursor --install-extension saoudrizwan.claude-dev
-/Applications/Cursor.app/Contents/Resources/app/bin/cursor \
-    --install-extension saoudrizwan.claude-dev
+cd ~/Documents/GitHub/cline-macm4-fork   # or wherever you cloned it
+./scripts/install-cline-macm4.sh
 ```
 
-**VS Code:**
+To target a specific IDE without the interactive prompt:
 
 ```bash
-# Requires the 'code' CLI in PATH. If `code` isn't found:
-#   open VS Code -> Cmd+Shift+P -> "Shell Command: Install 'code' command in PATH"
-code --install-extension saoudrizwan.claude-dev
+TARGET=cursor ./scripts/install-cline-macm4.sh
+TARGET=vscode ./scripts/install-cline-macm4.sh
+TARGET=both   ./scripts/install-cline-macm4.sh
 ```
 
-Don't have the IDE yet?
-
-- **Cursor:** download from <https://cursor.com>. The CLI ships in the
-  `.app` bundle automatically; no extra setup needed.
-- **VS Code:** download from <https://code.visualstudio.com>. Then enable
-  the `code` CLI from inside VS Code as noted above.
-
-#### Manual: GUI / marketplace
-
-If the CLI doesn't work or you prefer clicking:
-
-1. Open the IDE (Cursor or VS Code).
-2. **Extensions** tab — sidebar icon, or `Cmd+Shift+X`.
-3. Search for **`Cline`** (publisher: `saoudrizwan`).
-4. Click **Install** on the entry titled "Cline" by saoudrizwan.
-
-Direct marketplace link (works for both Cursor and VS Code, since Cursor
-reads the same OpenVSX/marketplace index):
-<https://marketplace.visualstudio.com/items?itemName=saoudrizwan.claude-dev>
-
-#### After install (any path)
-
-1. **Fully quit and relaunch** the IDE — Cline's activation hooks only
-   fire on a fresh start, not on hot-reload.
-2. Verify Cline shows up: the left sidebar should have a new robot /
-   chat-bubble icon. If not, check `~/.cursor/extensions/saoudrizwan.claude-dev*`
-   (Cursor) or `~/.vscode/extensions/saoudrizwan.claude-dev*` (VS Code)
-   exists.
-3. Continue to [Wire Cline to the proxy](#wire-cline-to-the-proxy) below.
+After install, fully quit and relaunch your IDE, then continue to
+[Wire Cline to the proxy](#wire-cline-to-the-proxy) below.
 
 ---
 
@@ -401,6 +359,146 @@ edit-loop semantics, troubleshooting):
 
 ---
 
+## Wire Claude Code to the proxy
+
+Claude Code is Anthropic's own coding agent, available as a VS Code / Cursor
+extension. It natively sends Anthropic-format requests, so it connects to the
+dedicated `claude_proxy` on `:4002` rather than the LiteLLM endpoint on `:4000`.
+
+### Step 1 — Install Claude Code
+
+In Cursor or VS Code, install the **Claude Code** extension from the Marketplace
+(publisher: `anthropics`), or via the CLI:
+
+```bash
+cursor --install-extension anthropics.claude-code   # Cursor
+code   --install-extension anthropics.claude-code   # VS Code
+```
+
+Sign in with your claude.ai account when prompted (no extra setup needed beyond
+normal Claude Code onboarding).
+
+### Step 2 — Point Claude Code at the local proxy
+
+Add these two lines to your shell profile (`~/.zshrc` or `~/.bash_profile`):
+
+```bash
+export ANTHROPIC_BASE_URL="http://127.0.0.1:4002"
+launchctl setenv ANTHROPIC_BASE_URL "http://127.0.0.1:4002"
+```
+
+Then:
+
+```bash
+source ~/.zshrc         # reload for the current shell
+# Fully quit and relaunch your IDE
+```
+
+### Step 3 — Verify
+
+Ask Claude Code a simple question (e.g. "What files are in this directory?").
+Then check the proxy log:
+
+```bash
+tail -f ~/MacM4LocalAgent/.logs/claude-proxy.out.log
+# Small prompt  → route=local  (free, Ollama)
+# Large prompt  → route=upstream mode=passthrough  (Team subscription)
+```
+
+Or run `make verify` — it will show:
+
+```
+PASS  claude-proxy /health → status=ok large_ctx_mode=passthrough
+PASS  claude-proxy large-ctx uses Team OAuth (no ANTHROPIC_API_KEY needed)
+```
+
+### Large-context billing mode
+
+By default, requests that exceed 128 k tokens are proxied to `api.anthropic.com`
+using Claude Code's own **Team subscription OAuth token** — no `ANTHROPIC_API_KEY`
+is read or injected. To switch to pay-per-token API billing instead, edit
+`config/detected.env` and set:
+
+```bash
+CLAUDE_PROXY_LARGE_CTX_MODE=apikey   # requires ANTHROPIC_API_KEY to be set
+```
+
+Then `make restart`. See [docs/CLAUDE-CODE-INTEGRATION.md](docs/CLAUDE-CODE-INTEGRATION.md)
+for full details and the ToS compliance rationale.
+
+---
+
+## Two clients, one deployment
+
+A single MacM4 instance serves both **Cline** and **Claude Code** simultaneously.
+They connect on separate ports so their auth paths never mix.
+
+---
+
+### 1. Client setup — what to configure in your IDE / shell
+
+| Client | Where | Setting | Value |
+| --- | --- | --- | --- |
+| **Cline** | Extension gear → API Provider | — | OpenAI Compatible |
+| **Cline** | Extension gear → Base URL | — | `http://127.0.0.1:4000/v1` |
+| **Cline** | Extension gear → Model ID | — | `gpt-hybrid-auto` *(auto-routes; see table 2)* |
+| **Cline** | Extension gear → API Key | — | any non-empty string (e.g. `not-needed`) |
+| **Claude Code** | `~/.zshrc` + launchctl | `ANTHROPIC_BASE_URL` | `http://127.0.0.1:4002` |
+| **Claude Code** | `config/detected.env` *(optional)* | `CLAUDE_PROXY_LARGE_CTX_MODE` | `passthrough` (default) or `apikey` |
+
+---
+
+### 2. Request routing — which model handles each request
+
+Both clients share the same decision logic: **token count** is measured first, then **task complexity**,
+then any explicit **prompt tag** you add.
+
+| Prompt tag / condition | Token count | Local model | Cloud model | Cloud auth | Cost |
+| --- | --- | --- | --- | --- | --- |
+| *(auto, no tag)* | ≤ 16 k | **MLX** – Qwen2.5-Coder-7B-4bit (`:8081`) | — | — | free |
+| *(auto, no tag)* | 16 k – 128 k | **Ollama** – Qwen3-Coder-Next q4\_K\_M (`:11434`) | — | — | free |
+| *(auto, complex task)* | any | — | **claude-opus-4-7** | `ANTHROPIC_API_KEY` ¹ | ~$5/MTok in |
+| *(auto, >128 k)* – **Cline** | > 128 k | — | **claude-opus-4-7** | `ANTHROPIC_API_KEY` ¹ | ~$5/MTok in |
+| *(auto, >128 k)* – **Claude Code**, passthrough | > 128 k | — | whichever model Claude Code requested ² | Team OAuth token | Team subscription |
+| *(auto, >128 k)* – **Claude Code**, apikey | > 128 k | — | whichever model Claude Code requested ² | `ANTHROPIC_API_KEY` ¹ | ~$5/MTok in |
+| `[local]` *(Cline only)* | any | **Ollama** – Qwen3-Coder-Next (forced) | — | — | free |
+| `[haiku]` *(Cline only)* | any | — | **claude-haiku-4-5** | `ANTHROPIC_API_KEY` ¹ | ~$1/MTok in |
+| `[sonnet]` *(Cline only)* | any | — | **claude-sonnet-4-6** | `ANTHROPIC_API_KEY` ¹ | ~$3/MTok in |
+| `[opus]` *(Cline only)* | any | — | **claude-opus-4-7** | `ANTHROPIC_API_KEY` ¹ | ~$5/MTok in |
+| `[claude]` *(Cline only)* | any | — | **claude-opus-4-7** (default alias) | `ANTHROPIC_API_KEY` ¹ | ~$5/MTok in |
+
+> ¹ `ANTHROPIC_API_KEY` is set once in `~/.zshrc` + `launchctl setenv`. It is used by LiteLLM (Cline path) and
+> optionally by claude\_proxy (Claude Code apikey mode). It is **never** read on the Claude Code passthrough path.
+>
+> ² In passthrough mode, claude\_proxy forwards the request to Anthropic unchanged — the model name Claude Code picked
+> (e.g. `claude-opus-4-7`, `claude-sonnet-4-6`) is preserved. You control this inside Claude Code's own settings.
+
+---
+
+### 3. Claude Code large-context modes (>128 k tokens)
+
+| Mode | How to set | Auth sent to Anthropic | Billed to | When to use |
+| --- | --- | --- | --- | --- |
+| **passthrough** *(default)* | `CLAUDE_PROXY_LARGE_CTX_MODE=passthrough` in `config/detected.env` | Claude Code's own Team OAuth bearer token | Claude Team subscription (flat fee) | You have a Claude Team plan and want large-context work billed there |
+| **apikey** | `CLAUDE_PROXY_LARGE_CTX_MODE=apikey` in `config/detected.env` | `ANTHROPIC_API_KEY` | Anthropic API account (pay-per-token) | You want separate billing or don't have a Team subscription |
+
+Apply a mode change with `make restart` (no reinstall needed).
+
+---
+
+### 4. Available local models
+
+| Tier | Model | Approx size on disk | Context window | Used when |
+| --- | --- | --- | --- | --- |
+| **local-fast** | `mlx-community/Qwen2.5-Coder-7B-Instruct-4bit` (MLX, `:8081`) | ~5 GB | 16 k tokens | prompt ≤ 16 k, not complex |
+| **local-long** | `qwen3-coder-next:q4_K_M` (Ollama GGUF, `:11434`) | ~45 GB | ~64 k tokens | 16 k < prompt ≤ 128 k, or any Claude Code small request |
+
+Both are downloaded automatically by `make install`. Use `[local]` in a Cline prompt to force local-long
+regardless of token count. Claude Code requests ≤ 128 k always use local-long (MLX is structurally
+unreachable from Claude Code because its system prompt alone exceeds 16 k tokens).
+
+---
+
 ## Models in play today
 
 What `make install` actually downloads + what the proxy exposes, against
@@ -447,15 +545,25 @@ want them: `ollama pull llama3.1:8b-instruct-q8_0`,
 | Run the test suite                      | `make test`                                       |
 | Reset everything (keep models)          | `make clean && make install`                      |
 | Reset everything (also drop models)     | `make nuke && make install`                       |
+| Wire Claude Code to the local proxy     | Set `ANTHROPIC_BASE_URL=http://127.0.0.1:4002`    |
+| Check claude-proxy health               | `curl -s http://127.0.0.1:4002/health`            |
+| View claude-proxy routing log           | `tail -f .logs/claude-proxy.out.log`              |
+| Switch large-ctx mode (passthrough↔apikey) | Edit `CLAUDE_PROXY_LARGE_CTX_MODE` in `config/detected.env`, then `make restart` |
 
 ---
 
 ## Security
 
-- **Loopback-only.** All four services bind to `127.0.0.1`. Verified via
+- **Loopback-only.** All five services bind to `127.0.0.1`. Verified via
   `lsof -nP -iTCP:4000 -sTCP:LISTEN` (returns `TCP 127.0.0.1:4000 (LISTEN)`)
-  and the launchd plist passes `--host 127.0.0.1` explicitly. Nothing
+  and each launchd plist passes `--host 127.0.0.1` explicitly. Nothing
   off-Mac can reach the proxy.
+- **Port isolation.** Cline traffic (`:4000`) never has access to the
+  Team OAuth passthrough path. Claude Code traffic (`:4002`) is handled by
+  `claude_proxy` which, in `passthrough` mode, forwards the original OAuth
+  bearer token to Anthropic unchanged — `ANTHROPIC_API_KEY` is never read on
+  this path. In `apikey` mode the API key IS used; switching modes requires
+  an explicit edit to `config/detected.env` and `make restart`.
 - **No `master_key` on the LiteLLM proxy.** The loopback bind IS the
   security boundary. A bearer-token gate on top of loopback added no real
   protection and was operational tax. To re-enable for off-host exposure
@@ -483,7 +591,6 @@ Deep-dive docs under [`docs/`](docs/):
 - [Cursor BYOK setup (legacy)](docs/RUNBOOK-cursor-setup.md) — Ask/Plan-mode use case
 - [Architecture](docs/architecture.md) — components, ports, dataflow
 - [Routing](docs/routing.md) — decision tree + Cline-specific rules
-- [TurboQuant — when this changes](docs/turboquant.md) — aspirational; not in effect today
 - [Cost model](docs/cost-model.md) — actual vs shadow vs savings
 - [Operations](docs/operations.md) — launchd, logs, surgery, `ANTHROPIC_API_KEY` reboot persistence
 - [Testing](docs/testing.md) — what each suite covers

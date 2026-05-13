@@ -174,6 +174,8 @@ LITELLM_PORT=4000
 MLX_PORT=8081
 OLLAMA_PORT=11434
 DASHBOARD_PORT=4001
+CLAUDE_PROXY_PORT=4002
+CLAUDE_PROXY_LARGE_CTX_MODE=passthrough
 EOF
 
 # Re-stamp downstream-owned fields so we don't lose them. 30-mlx.sh writes

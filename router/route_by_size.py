@@ -6,7 +6,7 @@ Wired in as both `callbacks` (for pre-call routing) and `success_callback`
 
 Routing rules (thresholds come from config/detected.env):
   - <ROUTE_FAST_MAX tokens, not complex   -> local-fast (MLX)
-  - ROUTE_FAST_MAX..ROUTE_LONG_MAX tokens -> local-long (Ollama + TurboQuant)
+  - ROUTE_FAST_MAX..ROUTE_LONG_MAX tokens -> local-long (Ollama)
   - >ROUTE_LONG_MAX tokens OR complex     -> claude-code
 
 If the user explicitly picks a real model name (local-fast, local-long, or

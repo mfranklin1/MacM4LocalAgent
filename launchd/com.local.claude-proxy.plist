@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>          <string>com.local.claude-proxy</string>
+  <key>RunAtLoad</key>      <true/>
+  <key>KeepAlive</key>      <true/>
+  <key>WorkingDirectory</key><string>@@REPO_ROOT@@</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>      <string>@@REPO_ROOT@@/.venvs/litellm/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>PYTHONPATH</key><string>@@REPO_ROOT@@</string>
+  </dict>
+  <key>ProgramArguments</key>
+  <array>
+    <string>@@REPO_ROOT@@/.venvs/litellm/bin/python</string>
+    <string>@@REPO_ROOT@@/claude_proxy/server.py</string>
+    <string>--host</string><string>127.0.0.1</string>
+    <string>--port</string><string>4002</string>
+  </array>
+  <key>StandardOutPath</key><string>@@REPO_ROOT@@/.logs/claude-proxy.out.log</string>
+  <key>StandardErrorPath</key><string>@@REPO_ROOT@@/.logs/claude-proxy.err.log</string>
+</dict>
+</plist>
