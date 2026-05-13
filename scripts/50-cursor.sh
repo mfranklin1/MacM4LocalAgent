@@ -29,7 +29,7 @@ This workspace runs a hybrid local+cloud LLM setup behind LiteLLM
 ## Models exposed
 
 - **local-fast** — MLX, Qwen3-Coder-Next, ≤16k context, ~70 tok/s, free.
-- **local-long** — Ollama + TurboQuant tq3 KV cache, ≤${LOCAL_LONG_CTX} ctx, free.
+- **local-long** — Ollama + ${KV_CACHE_TYPE} KV cache, ≤${LOCAL_LONG_CTX} ctx, free.
 - **claude-code** — default Claude tier, currently mapped to Opus 4.7 (\$5 in / \$25 out per MTok, 1M context).
 - **claude-haiku-4-5** / **claude-sonnet-4-6** / **claude-opus-4-7** — pinned to a specific Claude model.
 - **hybrid-auto** — let the router decide based on size + heuristic complexity.
@@ -76,7 +76,7 @@ Dashboard: <http://127.0.0.1:${DASHBOARD_PORT}>. CLI: \`make report\`.
 - Switch to **claude-code** explicitly when you want the strongest output
   (architecture reviews, gnarly bugs, designs).
 - Use **local-long** for any "read-this-large-thing" task — staying local
-  is free and fast on Apple Silicon with TurboQuant.
+  is free and fast on Apple Silicon.
 
 ## Don't
 
