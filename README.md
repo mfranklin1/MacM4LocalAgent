@@ -161,10 +161,8 @@ depends on:
 
 - `OLLAMA_TAG` — which Qwen3-Coder-Next GGUF to pull (e.g.
   `qwen3-coder-next:q4_K_M` on a 64-128 GB M-series).
-- `KV_CACHE_TYPE` — the strongest KV-cache compression your installed
-  Ollama supports (currently `q4_0`, ~4× compression). A higher-compression
-  `tq3` option is tracked upstream but not yet available in any released
-  Ollama build; `q4_0` is what you get today.
+- `KV_CACHE_TYPE` — the KV-cache compression type your installed Ollama
+  supports. On all current Ollama releases this is `q4_0` (~4× compression).
 - `LOCAL_LONG_CTX` — usable context ceiling for the Ollama tier
   (today: 65 536 = 64 k).
 - Ports for LiteLLM (`4000`), MLX (`8081`), Ollama (`11434`), dashboard
@@ -640,7 +638,6 @@ Deep-dive docs under [`docs/`](docs/):
 - [Cursor BYOK setup (legacy)](docs/RUNBOOK-cursor-setup.md) — Ask/Plan-mode use case
 - [Architecture](docs/architecture.md) — components, ports, dataflow
 - [Routing](docs/routing.md) — decision tree + Cline-specific rules
-- [KV cache upgrade path](docs/turboquant.md) — how to check when `tq3` support lands in Ollama and flip the config
 - [Cost model](docs/cost-model.md) — actual vs shadow vs savings
 - [Operations](docs/operations.md) — launchd, logs, surgery, `ANTHROPIC_API_KEY` reboot persistence
 - [Testing](docs/testing.md) — what each suite covers
