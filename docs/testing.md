@@ -19,6 +19,9 @@ tests/
 ├── test_compare.py          # judge score, mocked HTTP, DB persistence
 ├── test_dashboard.py        # FastAPI TestClient on every route
 ├── test_integration.py      # end-to-end: router -> DB -> savings -> dashboard
+├── test_overgeneration_control.py  # static/multi-turn guardrails + Qwen3 /think + thinking gating
+├── test_think_stream_transform.py  # <think> -> reasoning_content splitter + streaming hook
+├── test_thinking_pre_call_hook.py  # thinking-mode wiring in async_pre_call_hook (both tiers)
 ├── bench/
 │   ├── test_db.py           # bench_runs + provider_spend schema + writes
 │   ├── test_grader.py       # code extraction, AST checks, pytest grading
@@ -52,6 +55,7 @@ the venv.
 | `decide_tier`            | `test_router.py`                         | Small → fast, medium → long, huge → claude, complex → claude |
 | `async_pre_call_hook`    | `test_router.py`                         | Hybrid-auto rewrite + metadata, no-op for explicit     |
 | `log_success_event`      | `test_router.py`, `test_integration.py`  | Cost math, latency, dict + Pydantic usage              |
+| Thinking mode            | `test_overgeneration_control.py`, `test_think_stream_transform.py`, `test_thinking_pre_call_hook.py` | Qwen3 model gating, Claude `thinking` params, `<think>`→`reasoning_content` stream, pre-call wiring + kill switch |
 | Cost schema + ingest     | `test_cost.py`                           | Idempotent connect, record + retrieve                  |
 | `savings.summarize`      | `test_cost.py`                           | 7-day window, exclude-old, empty case                  |
 | `savings.main` CLI       | `test_cost.py`                           | JSON, single window, three-block default               |

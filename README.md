@@ -355,6 +355,11 @@ Prefix any prompt to override the router for that one turn:
 
 Tags must be **leading** — only the very first thing in the prompt counts.
 
+**Thinking mode** is on by default: both tiers stream a live reasoning
+trace into Cline (Qwen3 `/think` locally, Anthropic extended thinking on
+Claude). Disable with `ROUTER_THINKING=0`. Details and tunables in
+[docs/routing.md](docs/routing.md#thinking-mode-live-reasoning-trace).
+
 Full Cline walkthrough (model alternatives, failure detection,
 edit-loop semantics, troubleshooting):
 [docs/RUNBOOK-cline-setup.md](docs/RUNBOOK-cline-setup.md).

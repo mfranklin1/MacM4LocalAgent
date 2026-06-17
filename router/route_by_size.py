@@ -45,7 +45,10 @@ from router.offline_mode import (  # noqa: E402
     offline_reason,
 )
 from router.overgeneration_control import (  # noqa: E402
+    CLAUDE_THINKING_BUDGET_DEFAULT,
     _looks_like_cline,
+    _model_supports_think,
+    apply_claude_thinking_params,
     apply_multi_turn_tighten,
     apply_static_guardrail,
     inject_qwen3_think_directive,
@@ -105,11 +108,118 @@ def _control_flag(name: str, default: str = "1") -> bool:
 # default too. Disable with OVERGEN_STATIC=0 / OVERGEN_MULTI_TURN=0.
 ENABLE_STATIC_GUARDRAIL = _control_flag("OVERGEN_STATIC", "1")
 ENABLE_MULTI_TURN_TIGHTEN = _control_flag("OVERGEN_MULTI_TURN", "1")
-# Qwen3 /think injection for forced-local complex tasks. Defaults on:
-# the gating logic (only when "[local]" appears in route_reason AND
-# the resolved model is local) is conservative enough that the
-# default-on posture won't surprise users on trivial calls.
+# Qwen3 /think injection. Legacy switch kept for back-compat: when set,
+# /think is injected on forced-local turns even if the broader thinking
+# mode (ROUTER_THINKING) is off.
 ENABLE_THINK_INJECTION = _control_flag("ROUTER_THINK_INJECTION", "1")
+
+# Thinking mode: stream a live reasoning trace into the harness (Cline)
+# for BOTH tiers. When on:
+#   - Qwen3 local tiers get /think injected on every turn (so the model
+#     emits a <think> trace, which the streaming hook below relays as
+#     reasoning_content), gated on the resolved model actually being a
+#     Qwen3 model via _model_supports_think().
+#   - Claude tiers get Anthropic extended thinking enabled, which LiteLLM
+#     surfaces to the client as reasoning_content deltas.
+# Always-on by design (see the feat/thinking-mode discussion); flip off
+# globally with ROUTER_THINKING=0. Costs ~10-30% more output tokens and
+# roughly doubles per-turn latency.
+ENABLE_THINKING_MODE = _control_flag("ROUTER_THINKING", "1")
+
+
+def _thinking_budget() -> int:
+    """Claude extended-thinking budget in tokens (env override)."""
+    raw = os.environ.get("ROUTER_THINKING_BUDGET") or _ENV.get(
+        "ROUTER_THINKING_BUDGET", str(CLAUDE_THINKING_BUDGET_DEFAULT)
+    )
+    try:
+        return max(1024, int(raw))
+    except (TypeError, ValueError):
+        return CLAUDE_THINKING_BUDGET_DEFAULT
+
+
+# When /think is injected on a local Qwen3 turn the <think> reasoning
+# trace and the final answer share the same max_tokens budget -- and the
+# over-generation static guardrail has just clamped that to ~6k. Without
+# headroom the trace eats the answer. Re-assert a higher floor on think
+# turns. Env override: ROUTER_THINKING_LOCAL_MAX.
+LOCAL_THINK_MAX_TOKENS_DEFAULT = 12288
+
+
+def _local_think_max_tokens() -> int:
+    raw = os.environ.get("ROUTER_THINKING_LOCAL_MAX") or _ENV.get(
+        "ROUTER_THINKING_LOCAL_MAX", str(LOCAL_THINK_MAX_TOKENS_DEFAULT)
+    )
+    try:
+        return max(2048, int(raw))
+    except (TypeError, ValueError):
+        return LOCAL_THINK_MAX_TOKENS_DEFAULT
+
+
+# ---- Qwen3 <think> stream parsing -------------------------------------------
+# Qwen3 emits its reasoning trace inline as `<think> ... </think>` in the
+# normal content stream. Cline only renders a live "Thinking" section for
+# text that arrives on the `reasoning_content` delta channel, so we split
+# the content stream: text inside <think>...</think> is re-routed to
+# reasoning_content, everything else stays on content.
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "</think>"
+
+
+def _partial_tag_suffix_len(s: str, tag: str) -> int:
+    """Length of the longest suffix of `s` that is a proper prefix of
+    `tag` (so we can hold it back in case the tag is split across stream
+    chunks). 0 if none."""
+    for k in range(min(len(s), len(tag) - 1), 0, -1):
+        if s.endswith(tag[:k]):
+            return k
+    return 0
+
+
+def _split_think_stream(buffer: str, in_think: bool) -> tuple[str, str, str, bool]:
+    """Incremental <think> splitter.
+
+    Given the accumulated `buffer` and whether we're currently inside a
+    think block, return (content_out, reasoning_out, carry, in_think):
+      - content_out: text to emit on the content channel this step
+      - reasoning_out: text to emit on the reasoning_content channel
+      - carry: trailing bytes held back (possible split tag) for next call
+      - in_think: updated state
+    """
+    content_out: list[str] = []
+    reasoning_out: list[str] = []
+    while True:
+        if in_think:
+            idx = buffer.find(_THINK_CLOSE)
+            if idx == -1:
+                break
+            reasoning_out.append(buffer[:idx])
+            buffer = buffer[idx + len(_THINK_CLOSE):]
+            in_think = False
+        else:
+            idx = buffer.find(_THINK_OPEN)
+            if idx == -1:
+                break
+            content_out.append(buffer[:idx])
+            buffer = buffer[idx + len(_THINK_OPEN):]
+            in_think = True
+    tag = _THINK_CLOSE if in_think else _THINK_OPEN
+    hold = _partial_tag_suffix_len(buffer, tag)
+    safe = buffer[: len(buffer) - hold] if hold else buffer
+    carry = buffer[len(buffer) - hold:] if hold else ""
+    if in_think:
+        reasoning_out.append(safe)
+    else:
+        content_out.append(safe)
+    return "".join(content_out), "".join(reasoning_out), carry, in_think
+
+
+def _is_claude_model_name(model: str | None) -> bool:
+    """True if the resolved model name belongs to a Claude tier."""
+    if not isinstance(model, str):
+        return False
+    m = model.lower()
+    return "claude" in m or "anthropic" in m
 
 
 def _is_local_model_name(model: str | None) -> bool:
@@ -1087,24 +1197,31 @@ class SizeBasedRouter(_LiteLLMCustomLogger):
             pre_n_msgs = len(data.get("messages") or [])
             pre_first_role = ((data.get("messages") or [{}])[0] or {}).get("role")
 
-            # Qwen3 /think directive injection. Fires only when:
-            #   1. Resolved model is local (local-fast or local-long).
-            #   2. The routing reason indicates the user EXPLICITLY
-            #      chose local despite signals that would normally
-            #      escalate to Claude (e.g. `[local]` tag, complex
-            #      content kept local by user override).
+            # ---- Thinking mode --------------------------------------
+            # Goal: stream a live reasoning trace into the harness
+            # (Cline) for BOTH tiers, instead of an empty "thinking" tag.
             #
-            # The cheapest reliable signal is the route_reason string
-            # stamped above. It contains "[local]" exactly when the
-            # explicit opt-out tag fired.
+            # Local (Qwen3): inject /think so the model emits a <think>
+            # trace inline; async_post_call_streaming_iterator_hook below
+            # relays that as reasoning_content. Gated on the resolved
+            # model actually being a Qwen3 model (env-derived) so we
+            # never inject the literal "/think " into llama3.1 /
+            # qwen2.5-coder, which don't have the switch.
             #
-            # Why we don't unconditionally inject /think on every
-            # local call: extended-reasoning mode costs ~10-30% more
-            # output tokens and roughly doubles per-turn latency. For
-            # trivial tasks that's wasted budget. We only pay the
-            # cost when the user explicitly opted into a hard local
-            # turn.
-            if ENABLE_THINK_INJECTION and _is_local_model_name(data.get("model")):
+            # Claude: enable Anthropic extended thinking; LiteLLM
+            # surfaces it to the client as reasoning_content deltas.
+            #
+            # ROUTER_THINKING is always-on by design but kept behind a
+            # kill switch. The legacy ENABLE_THINK_INJECTION path (fire
+            # only on the explicit [local] tag) is preserved for when
+            # thinking mode is globally off.
+            model_name = data.get("model")
+            if ENABLE_THINKING_MODE and _model_supports_think(model_name):
+                inject_qwen3_think_directive(data)
+                meta = data.setdefault("metadata", {})
+                meta["qwen3_think_injected"] = True
+            elif ENABLE_THINK_INJECTION and _is_local_model_name(model_name):
+                # Back-compat: only on the explicit [local] opt-out tag.
                 route_reason = (
                     data.get("metadata", {}).get("route_reason") or ""
                 )
@@ -1112,6 +1229,11 @@ class SizeBasedRouter(_LiteLLMCustomLogger):
                     inject_qwen3_think_directive(data)
                     meta = data.setdefault("metadata", {})
                     meta["qwen3_think_injected"] = True
+
+            if ENABLE_THINKING_MODE and _is_claude_model_name(model_name):
+                apply_claude_thinking_params(data, budget=_thinking_budget())
+                meta = data.setdefault("metadata", {})
+                meta["claude_thinking_enabled"] = True
 
             if ENABLE_STATIC_GUARDRAIL:
                 apply_static_guardrail(data)
@@ -1124,6 +1246,19 @@ class SizeBasedRouter(_LiteLLMCustomLogger):
                 if pre_max_mt != post_max_mt:
                     meta = data.setdefault("metadata", {})
                     meta["overgen_multi_turn_applied"] = True
+
+            # The over-generation guardrails above just clamped
+            # max_tokens for local turns. On a /think turn the reasoning
+            # trace shares that budget with the answer, so re-assert a
+            # floor AFTER the guardrails to stop the trace truncating the
+            # response. (Claude's floor is set by apply_claude_thinking_params
+            # and the guardrails are local-only no-ops, so this only
+            # affects local think turns.)
+            if data.get("metadata", {}).get("qwen3_think_injected"):
+                floor = _local_think_max_tokens()
+                cur = data.get("max_tokens")
+                if not isinstance(cur, int) or cur < floor:
+                    data["max_tokens"] = floor
 
             if OVERGEN_TRACE and (ENABLE_STATIC_GUARDRAIL or ENABLE_MULTI_TURN_TIGHTEN):
                 _trace_overgen(
@@ -1153,6 +1288,72 @@ class SizeBasedRouter(_LiteLLMCustomLogger):
         except Exception as e:  # never break user requests
             print(f"[router] pre-call hook error: {e}", file=sys.stderr)
         return data
+
+    # ------------------ post-call: stream <think> -> reasoning_content ------
+    async def async_post_call_streaming_iterator_hook(  # type: ignore[override]
+        self,
+        user_api_key_dict: Any,
+        response: Any,
+        request_data: dict,
+    ):
+        """Re-route Qwen3's inline `<think>...</think>` trace onto the
+        `reasoning_content` delta channel so Cline renders it as a live
+        reasoning section instead of dumping it into the message body.
+
+        Only active for turns where we injected /think (flagged in
+        metadata by the pre-call hook). For every other response -- Claude
+        (LiteLLM already emits reasoning_content), non-think local turns,
+        tool-call deltas -- chunks pass through untouched. Never raises:
+        on any error we fall back to yielding the original chunk.
+        """
+        meta = (request_data or {}).get("metadata") or {}
+        if not meta.get("qwen3_think_injected"):
+            async for chunk in response:
+                yield chunk
+            return
+
+        buffer = ""
+        in_think = False
+        async for chunk in response:
+            try:
+                choices = getattr(chunk, "choices", None)
+                if not choices:
+                    yield chunk
+                    continue
+                delta = getattr(choices[0], "delta", None)
+                content = getattr(delta, "content", None) if delta is not None else None
+                if delta is None or not isinstance(content, str) or content == "":
+                    yield chunk
+                    continue
+                buffer += content
+                out_content, out_reasoning, buffer, in_think = _split_think_stream(
+                    buffer, in_think
+                )
+                delta.content = out_content or None
+                if out_reasoning:
+                    delta.reasoning_content = out_reasoning
+            except Exception:
+                pass
+            yield chunk
+        # Flush any held-back tail (e.g. a partial tag that never completed).
+        if buffer:
+            try:
+                from litellm.types.utils import (  # local import: optional dep
+                    Delta,
+                    ModelResponseStream,
+                    StreamingChoices,
+                )
+
+                delta = Delta()
+                if in_think:
+                    delta.reasoning_content = buffer
+                else:
+                    delta.content = buffer
+                yield ModelResponseStream(
+                    choices=[StreamingChoices(index=0, delta=delta)]
+                )
+            except Exception:
+                pass
 
     # ------------------ post-call: record actual + shadow cost --------------
     def log_success_event(self, kwargs: dict[str, Any], response_obj: Any, start_time: Any, end_time: Any) -> None:

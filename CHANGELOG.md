@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Thinking mode** — the router now streams a live reasoning trace into
+  the harness (Cline) for both tiers instead of an empty "thinking" tag.
+  Local Qwen3 turns get `/think` injected and their inline `<think>…</think>`
+  trace is re-routed onto the `reasoning_content` delta channel by a new
+  `async_post_call_streaming_iterator_hook`; Claude turns get Anthropic
+  extended thinking enabled (`thinking` block + `temperature=1`,
+  `max_tokens` floor). `/think` is gated on the resolved model actually
+  being Qwen3 (`_model_supports_think()` reads `MLX_LOCAL_DIR`/`MLX_REPO`
+  and `OLLAMA_TAG`), so `local-agent` (llama3.1) and `local-coder-*`
+  (qwen2.5) are never mis-injected. New env vars: `ROUTER_THINKING`
+  (default on), `ROUTER_THINKING_BUDGET` (2048), `ROUTER_THINKING_LOCAL_MAX`
+  (12288). Wired for the Cline → LiteLLM path; see
+  [docs/routing.md](docs/routing.md#thinking-mode-live-reasoning-trace).
 - `docs/RUNBOOK-cursor-setup.md` — first-time install runbook with the
   concrete values from the install (master key, ports, model status,
   troubleshooting).

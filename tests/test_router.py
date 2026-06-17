@@ -524,6 +524,11 @@ def test_pre_call_cline_stamps_full_request_estimate(router: SizeBasedRouter) ->
     big_history = {"role": "user", "content": "log line output\n" * 4000}
     msgs = _cline_msgs(task, {"role": "assistant", "content": "ok"}, big_history)
     data: dict[str, Any] = {"model": "hybrid-auto", "messages": msgs}
+    # The stamped estimate reflects the inbound request size. Snapshot it
+    # before the hook runs, since thinking mode may prepend a "/think "
+    # directive to the last user message (server-side mutation that must
+    # not be counted as part of the user's prompt-size metric).
+    expected_estimate = _estimate_tokens(msgs)
 
     new = asyncio.run(router.async_pre_call_hook(None, None, data, "completion"))
     assert new is not None
@@ -532,7 +537,7 @@ def test_pre_call_cline_stamps_full_request_estimate(router: SizeBasedRouter) ->
     assert "task=" in meta["route_reason"]
     # ...but the estimate driving the live row is the full prompt size.
     task_tokens = max(1, len(task) // 4)
-    assert meta["route_tokens_estimated"] == _estimate_tokens(msgs)
+    assert meta["route_tokens_estimated"] == expected_estimate
     assert meta["route_tokens_estimated"] > task_tokens * 10
 
 

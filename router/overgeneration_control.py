@@ -34,6 +34,7 @@ crashes the request path is worse than no control at all.
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Any, Iterable
 
@@ -138,6 +139,57 @@ LOCAL_FIXUP_NUDGE = (
 # because of explicit overrides, the local model benefits from the
 # extra reasoning budget. We inject /think to give Qwen3 a fair shot.
 QWEN3_THINK_PREFIX = "/think "
+
+# Substring that identifies a model family that actually understands the
+# Qwen3 /think runtime switch. We check the *resolved* upstream model id
+# (or the env that the tier alias maps to) rather than the tier alias
+# itself: `local-fast`/`local-long` are only Qwen3 because detected.env
+# currently points them at Qwen3-Coder-Next, and that can drift (the
+# .bak in this repo proves local-fast was once a Qwen2.5 model). If we
+# gated on the alias and the MLX dir got repointed to a non-Qwen3 model
+# we'd silently inject the literal string "/think " as junk into a model
+# that has no thinking switch. Gating on the real model id makes "use
+# the right model for thinking" something the code enforces.
+_THINK_CAPABLE_SIGNATURE = "qwen3"
+
+
+def _model_supports_think(model: str | None) -> bool:
+    """True only if the resolved local tier is backed by a Qwen3 model.
+
+    `local-fast` resolves (via LiteLLM config) to the MLX model served
+    out of MLX_LOCAL_DIR / MLX_REPO; `local-long` resolves to the Ollama
+    tag in OLLAMA_TAG. Both must carry the Qwen3 signature for /think to
+    do anything. `local-agent` (llama3.1) and `local-coder-*`
+    (qwen2.5-coder) never support the switch.
+    """
+    if not isinstance(model, str) or not model:
+        return False
+    m = model.lower()
+    if "claude" in m or "anthropic" in m:
+        return False
+    canonical = m[len("gpt-"):] if m.startswith("gpt-") else m
+    # Tiers we know are NOT Qwen3 regardless of env.
+    if canonical == "local-agent" or canonical.startswith("local-coder-"):
+        return False
+    if canonical == "local-fast":
+        mlx = (os.environ.get("MLX_LOCAL_DIR", "") + " "
+               + os.environ.get("MLX_REPO", "")).lower()
+        return _THINK_CAPABLE_SIGNATURE in mlx
+    if canonical == "local-long":
+        return _THINK_CAPABLE_SIGNATURE in os.environ.get("OLLAMA_TAG", "").lower()
+    # Upstream-shaped ids passed through verbatim (e.g. "ollama/qwen3-...").
+    return _THINK_CAPABLE_SIGNATURE in canonical
+
+
+# Claude extended-thinking defaults. Anthropic streams a `thinking`
+# content block (surfaced by LiteLLM as `delta.reasoning_content`) only
+# when the request carries `thinking={"type":"enabled","budget_tokens":N}`.
+# Without it the model emits no reasoning trace at all, so Cline shows an
+# empty "thinking" indicator. budget_tokens must be >=1024 per Anthropic;
+# max_tokens must exceed the budget (the budget is *part* of the output
+# allowance), so we floor max_tokens at budget + a response headroom.
+CLAUDE_THINKING_BUDGET_DEFAULT = 2048
+CLAUDE_THINKING_RESPONSE_HEADROOM = 4096
 
 # Models we treat as "local" for the purposes of these controls.
 # Includes both the alias names and common upstream id prefixes that
@@ -460,6 +512,35 @@ def inject_qwen3_think_directive(data: dict[str, Any]) -> dict[str, Any]:
             else:
                 msg["content"] = QWEN3_THINK_PREFIX.rstrip()
             return data
+    except Exception:
+        pass
+    return data
+
+
+def apply_claude_thinking_params(
+    data: dict[str, Any],
+    budget: int = CLAUDE_THINKING_BUDGET_DEFAULT,
+) -> dict[str, Any]:
+    """Enable Anthropic extended thinking on a Claude-tier request.
+
+    Sets the `thinking` block, forces the Anthropic-required sampling
+    params (temperature must be 1 and top_p must be unset when thinking
+    is enabled), and floors `max_tokens` above the reasoning budget so
+    the model has room for both the thinking trace and a final answer.
+
+    Idempotent and never raises -- a control that crashes the request
+    path is worse than no thinking. Mutates and returns `data`.
+    """
+    try:
+        budget = max(1024, int(budget))
+        data["thinking"] = {"type": "enabled", "budget_tokens": budget}
+        # Anthropic rejects temperature != 1 / any top_p when thinking is on.
+        data["temperature"] = 1
+        data.pop("top_p", None)
+        floor = budget + CLAUDE_THINKING_RESPONSE_HEADROOM
+        current = data.get("max_tokens")
+        if not isinstance(current, int) or current < floor:
+            data["max_tokens"] = floor
     except Exception:
         pass
     return data

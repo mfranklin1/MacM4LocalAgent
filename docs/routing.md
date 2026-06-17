@@ -134,6 +134,54 @@ This applies uniformly to:
 / `make offline-status`. Full runbook + Cline context-clearing
 recipe in [offline-mode.md](offline-mode.md).
 
+## Thinking mode (live reasoning trace)
+
+After a request is routed to a tier, the pre-call hook can turn on a
+**reasoning trace** so the harness (Cline) shows live "thinking" instead
+of an empty indicator. This works for **both** tiers and is controlled by
+`ROUTER_THINKING` (default **on**; set `ROUTER_THINKING=0` to disable).
+
+| Tier | Mechanism | What the client receives |
+| --- | --- | --- |
+| local (Qwen3) | `/think` directive injected into the last user message | Qwen3 emits an inline `<think>…</think>` trace; the streaming hook re-routes it onto the `reasoning_content` delta channel |
+| Claude | `thinking={"type":"enabled","budget_tokens":N}` added to the request (forces `temperature=1`, drops `top_p`, floors `max_tokens`) | Anthropic extended-thinking blocks, surfaced by LiteLLM as `reasoning_content` deltas |
+
+### Local tier is gated on the *real* model, not the alias
+
+`/think` is a Qwen3-Coder-Next feature. The hook only injects it when the
+resolved tier is actually backed by a Qwen3 model, decided by
+`_model_supports_think()`:
+
+- `local-fast` → checks `MLX_LOCAL_DIR` / `MLX_REPO` for a `qwen3` signature.
+- `local-long` → checks `OLLAMA_TAG` for `qwen3`.
+- `local-agent` (llama3.1) and `local-coder-*` (qwen2.5) → **never** injected.
+
+This avoids silently prepending the literal string `/think ` to a model
+that has no such switch (which would corrupt the prompt) if
+`MLX_LOCAL_DIR` is ever repointed to a non-Qwen3 model.
+
+### max_tokens interaction
+
+On a local `/think` turn the reasoning trace shares the `max_tokens`
+budget with the answer, and the over-generation static guardrail has just
+clamped that to ~6k. The hook therefore re-asserts a higher floor
+(`ROUTER_THINKING_LOCAL_MAX`, default 12288) *after* the guardrail so the
+trace can't truncate the response. For Claude, `max_tokens` is floored at
+`budget + headroom` by the thinking-params step.
+
+### Tunables
+
+| Env var | Default | Effect |
+| --- | --- | --- |
+| `ROUTER_THINKING` | `1` | Master switch for thinking mode (both tiers). |
+| `ROUTER_THINKING_BUDGET` | `2048` | Claude `budget_tokens` (clamped to ≥1024). |
+| `ROUTER_THINKING_LOCAL_MAX` | `12288` | `max_tokens` floor for local `/think` turns. |
+| `ROUTER_THINK_INJECTION` | `1` | Legacy: inject `/think` only on the explicit `[local]` tag when `ROUTER_THINKING` is off. |
+
+Scope: this is wired for the **Cline → LiteLLM (:4000)** path. The
+`claude_proxy` (:4002) path used by the Claude Code extension does not yet
+relay `reasoning_content`.
+
 ## Modifying the rules
 
 - **Move the boundaries:** edit `ROUTE_FAST_MAX` / `ROUTE_LONG_MAX` in

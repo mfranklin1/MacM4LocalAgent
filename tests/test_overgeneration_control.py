@@ -602,3 +602,76 @@ def test_inject_qwen3_think_safe_on_empty_messages() -> None:
     ):
         # Must not raise.
         inject_qwen3_think_directive(data)
+
+
+# ---- M6b: model-aware think gating -------------------------------------------
+
+def test_model_supports_think_local_fast_qwen3(monkeypatch: Any) -> None:
+    """local-fast is think-capable only when the MLX model is Qwen3."""
+    from router.overgeneration_control import _model_supports_think
+    monkeypatch.setenv("MLX_LOCAL_DIR", "/models/mlx-community_Qwen3-Coder-Next-4bit")
+    monkeypatch.setenv("MLX_REPO", "mlx-community/Qwen3-Coder-Next-4bit")
+    assert _model_supports_think("local-fast") is True
+    assert _model_supports_think("gpt-local-fast") is True
+
+
+def test_model_supports_think_local_fast_non_qwen3(monkeypatch: Any) -> None:
+    """If MLX_LOCAL_DIR drifts to a Qwen2.5 model, /think must NOT fire."""
+    from router.overgeneration_control import _model_supports_think
+    monkeypatch.setenv("MLX_LOCAL_DIR", "/models/mlx-community_Qwen2.5-Coder-7B-Instruct-4bit")
+    monkeypatch.setenv("MLX_REPO", "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit")
+    assert _model_supports_think("local-fast") is False
+
+
+def test_model_supports_think_local_long_uses_ollama_tag(monkeypatch: Any) -> None:
+    from router.overgeneration_control import _model_supports_think
+    monkeypatch.setenv("OLLAMA_TAG", "qwen3-coder-next:q4")
+    assert _model_supports_think("local-long") is True
+    monkeypatch.setenv("OLLAMA_TAG", "qwen2.5-coder:14b")
+    assert _model_supports_think("local-long") is False
+
+
+def test_model_supports_think_excludes_non_qwen3_tiers(monkeypatch: Any) -> None:
+    """local-agent (llama3.1) and local-coder-* (qwen2.5) never support /think,
+    regardless of env."""
+    from router.overgeneration_control import _model_supports_think
+    monkeypatch.setenv("OLLAMA_TAG", "qwen3-coder-next:q4")
+    monkeypatch.setenv("MLX_LOCAL_DIR", "/models/Qwen3-Coder-Next")
+    assert _model_supports_think("local-agent") is False
+    assert _model_supports_think("local-coder-14b") is False
+    assert _model_supports_think("local-coder-32b") is False
+
+
+def test_model_supports_think_excludes_claude() -> None:
+    from router.overgeneration_control import _model_supports_think
+    assert _model_supports_think("claude-opus-4-7") is False
+    assert _model_supports_think("anthropic/claude-sonnet-4-6") is False
+    assert _model_supports_think(None) is False
+
+
+# ---- M6c: Claude extended-thinking params ------------------------------------
+
+def test_apply_claude_thinking_params_sets_block_and_sampling() -> None:
+    from router.overgeneration_control import apply_claude_thinking_params
+    data: dict[str, Any] = {"model": "claude-opus-4-7", "temperature": 0.2, "top_p": 0.9}
+    apply_claude_thinking_params(data, budget=2048)
+    assert data["thinking"] == {"type": "enabled", "budget_tokens": 2048}
+    assert data["temperature"] == 1
+    assert "top_p" not in data
+    # max_tokens floored above the budget so the trace + answer both fit.
+    assert data["max_tokens"] > 2048
+
+
+def test_apply_claude_thinking_params_respects_larger_max_tokens() -> None:
+    from router.overgeneration_control import apply_claude_thinking_params
+    data: dict[str, Any] = {"model": "claude-opus-4-7", "max_tokens": 50000}
+    apply_claude_thinking_params(data, budget=2048)
+    assert data["max_tokens"] == 50000
+
+
+def test_apply_claude_thinking_params_clamps_min_budget() -> None:
+    """Anthropic requires budget_tokens >= 1024."""
+    from router.overgeneration_control import apply_claude_thinking_params
+    data: dict[str, Any] = {"model": "claude-opus-4-7"}
+    apply_claude_thinking_params(data, budget=10)
+    assert data["thinking"]["budget_tokens"] >= 1024
