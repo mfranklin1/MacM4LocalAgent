@@ -1,7 +1,8 @@
-"""claude_proxy — thin reverse-proxy on :4002 for the Claude Code VS Code extension.
+"""claude_proxy — thin reverse-proxy on :4002 for the Claude Code VS Code extension
+and a subscription-auth injector for LiteLLM Claude escalations.
 
-Routing logic
--------------
+Routing logic (Claude Code path — /v1/messages)
+------------------------------------------------
 Claude Code sends Anthropic-format POST /v1/messages requests.  The proxy
 inspects the token count and decides:
 
@@ -21,23 +22,29 @@ inspects the token count and decides:
                                is replaced with ANTHROPIC_API_KEY (pay-per-token
                                billing against a platform.claude.com account).
 
+LiteLLM subscription path  (/subscription/v1/messages)
+-------------------------------------------------------
+LiteLLM Claude model entries point api_base at http://127.0.0.1:4002/subscription.
+This endpoint ignores the incoming API key and injects the claude.ai Team OAuth
+token from the macOS keychain (read fresh with a 30-second TTL cache).
+
+  CLAUDE_AUTH_MODE=subscription (default) — use keychain OAuth token
+  CLAUDE_AUTH_MODE=apikey                 — use ANTHROPIC_API_KEY instead
+
 Key guarantees
 --------------
-- In passthrough mode the Anthropic API key is never touched, which means
-  large-context escalations are billed to the Claude Team subscription, not
-  to a separate API account.
-- The two auth paths are isolated: Cline only reaches :4000 (API-key only);
-  Claude Code only reaches :4002 (this proxy).  There is no cross-contamination.
-- Streaming (text/event-stream) is transparently proxied in both the local and
-  the passthrough/apikey paths.
+- In passthrough/subscription mode the Anthropic API key is never touched.
+- The two auth paths are isolated: Cline reaches :4000 (LiteLLM) which escalates
+  via /subscription/v1/messages; Claude Code reaches /v1/messages directly.
+- Streaming (text/event-stream) is transparently proxied on all paths.
 
 Usage
 -----
   python claude_proxy/server.py [--port 4002] [--host 127.0.0.1]
 
 The server reads config/detected.env on startup to resolve ROUTE_LONG_MAX,
-CLAUDE_PROXY_PORT, CLAUDE_PROXY_LARGE_CTX_MODE, and LITELLM_PORT.  Live env
-vars always win over detected.env values.
+CLAUDE_PROXY_PORT, CLAUDE_PROXY_LARGE_CTX_MODE, CLAUDE_AUTH_MODE, and
+LITELLM_PORT.  Live env vars always win over detected.env values.
 """
 from __future__ import annotations
 
@@ -46,6 +53,7 @@ import json
 import logging
 import os
 import pathlib
+import subprocess
 import sys
 import time
 from typing import Any, AsyncIterator
@@ -82,9 +90,46 @@ _load_detected_env()
 ROUTE_LONG_MAX: int = int(os.environ.get("ROUTE_LONG_MAX", "128000"))
 LITELLM_PORT: int = int(os.environ.get("LITELLM_PORT", "4000"))
 LARGE_CTX_MODE: str = os.environ.get("CLAUDE_PROXY_LARGE_CTX_MODE", "passthrough").lower()
+CLAUDE_AUTH_MODE: str = os.environ.get("CLAUDE_AUTH_MODE", "subscription").lower()
 
 LITELLM_BASE = f"http://127.0.0.1:{LITELLM_PORT}"
 ANTHROPIC_BASE = "https://api.anthropic.com"
+
+# ── subscription token cache ─────────────────────────────────────────────────
+_token_cache: dict[str, Any] = {"token": None, "expires_at": 0.0}
+_TOKEN_TTL = 30.0  # seconds
+
+
+def _get_subscription_token() -> str:
+    """Read the claude.ai OAuth access token from the macOS keychain.
+
+    Caches the result for _TOKEN_TTL seconds to avoid a subprocess call on
+    every request while still picking up rotated tokens promptly.
+
+    Returns the token string, or raises RuntimeError if unavailable.
+    """
+    now = time.monotonic()
+    if _token_cache["token"] and now < _token_cache["expires_at"]:
+        return _token_cache["token"]  # type: ignore[return-value]
+
+    try:
+        raw = subprocess.check_output(
+            ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        ).decode().strip()
+        data = json.loads(raw)
+        oauth = data.get("claudeAiOauth") or {}
+        token = oauth.get("accessToken", "")
+        if not token:
+            raise RuntimeError("claudeAiOauth.accessToken missing from keychain entry")
+        _token_cache["token"] = token
+        _token_cache["expires_at"] = now + _TOKEN_TTL
+        return token
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("keychain read timed out") from exc
+    except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError) as exc:
+        raise RuntimeError(f"failed to read subscription token from keychain: {exc}") from exc
 
 # Headers forwarded verbatim when proxying to Anthropic.
 _ANTHROPIC_FORWARD_HEADERS = {
@@ -466,6 +511,7 @@ async def health() -> JSONResponse:
         "status": "ok",
         "route_long_max": ROUTE_LONG_MAX,
         "large_ctx_mode": LARGE_CTX_MODE,
+        "claude_auth_mode": CLAUDE_AUTH_MODE,
         "litellm_port": LITELLM_PORT,
     })
 
@@ -491,6 +537,93 @@ async def messages_ping() -> JSONResponse:
     return JSONResponse({"type": "ping"})
 
 
+# ── LiteLLM subscription endpoint ────────────────────────────────────────────
+# LiteLLM Claude model entries use api_base=http://127.0.0.1:4002/subscription,
+# so LiteLLM POSTs to /subscription/v1/messages.  This endpoint ignores the
+# incoming API key and injects the appropriate auth:
+#   CLAUDE_AUTH_MODE=subscription  →  OAuth token from macOS keychain (default)
+#   CLAUDE_AUTH_MODE=apikey        →  ANTHROPIC_API_KEY env var
+
+def _build_subscription_headers(request: Request) -> dict[str, str]:
+    """Build auth headers for the LiteLLM → Anthropic path."""
+    headers: dict[str, str] = {}
+    for hname in ("anthropic-version", "anthropic-beta", "content-type"):
+        val = request.headers.get(hname)
+        if val:
+            headers[hname] = val
+    headers.setdefault("content-type", "application/json")
+    headers.setdefault("anthropic-version", "2023-06-01")
+
+    if CLAUDE_AUTH_MODE == "apikey":
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            raise ValueError("CLAUDE_AUTH_MODE=apikey but ANTHROPIC_API_KEY is not set")
+        headers["x-api-key"] = api_key
+    else:
+        token = _get_subscription_token()
+        headers["authorization"] = f"Bearer {token}"
+
+    return headers
+
+
+@app.post("/subscription/v1/messages")
+async def subscription_messages(request: Request) -> Response:
+    """Forward to api.anthropic.com using the claude.ai subscription token (or API key)."""
+    try:
+        body = await request.body()
+        body_json = json.loads(body)
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+
+    is_stream = body_json.get("stream", False)
+    model = body_json.get("model", "unknown")
+
+    try:
+        upstream_headers = _build_subscription_headers(request)
+    except (ValueError, RuntimeError) as exc:
+        log.error("subscription auth error: %s", exc)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+    log.info(
+        "route=subscription auth=%s model=%s stream=%s",
+        CLAUDE_AUTH_MODE, model, is_stream,
+    )
+
+    timeout = httpx.Timeout(360.0, connect=10.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        if is_stream:
+            async with client.stream(
+                "POST",
+                f"{ANTHROPIC_BASE}/v1/messages",
+                content=body,
+                headers=upstream_headers,
+            ) as resp:
+                if resp.status_code != 200:
+                    body_bytes = await resp.aread()
+                    return Response(content=body_bytes, status_code=resp.status_code,
+                                    media_type="application/json")
+
+                async def _gen() -> AsyncIterator[bytes]:
+                    async for chunk in _passthrough_stream(resp):
+                        yield chunk
+
+                return StreamingResponse(_gen(), media_type="text/event-stream",
+                                         status_code=resp.status_code)
+        else:
+            resp = await client.post(
+                f"{ANTHROPIC_BASE}/v1/messages",
+                content=body,
+                headers=upstream_headers,
+            )
+            return Response(content=resp.content, status_code=resp.status_code,
+                            media_type="application/json")
+
+
+@app.get("/subscription/v1/messages")
+async def subscription_ping() -> JSONResponse:
+    return JSONResponse({"type": "ping"})
+
+
 # ── CLI entry point ──────────────────────────────────────────────────────────
 
 def _parse_args() -> argparse.Namespace:
@@ -509,7 +642,8 @@ if __name__ == "__main__":
         datefmt="%Y-%m-%dT%H:%M:%S",
     )
     log.info(
-        "claude_proxy starting host=%s port=%d large_ctx_mode=%s route_long_max=%d litellm_port=%d",
-        args.host, args.port, LARGE_CTX_MODE, ROUTE_LONG_MAX, LITELLM_PORT,
+        "claude_proxy starting host=%s port=%d large_ctx_mode=%s claude_auth_mode=%s "
+        "route_long_max=%d litellm_port=%d",
+        args.host, args.port, LARGE_CTX_MODE, CLAUDE_AUTH_MODE, ROUTE_LONG_MAX, LITELLM_PORT,
     )
     uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)

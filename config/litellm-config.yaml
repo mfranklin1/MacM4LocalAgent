@@ -65,9 +65,14 @@ model_list:
     # in cost.db is computed from cost/pricing.py, NOT the values below;
     # the input/output_cost_per_token fields here only affect LiteLLM's
     # internal /spend bookkeeping and are kept in sync as a courtesy.
+    #
+    # Auth is handled by the claude_proxy subscription endpoint (port 4002).
+    # CLAUDE_AUTH_MODE=subscription (default) uses the macOS keychain OAuth
+    # token; CLAUDE_AUTH_MODE=apikey uses ANTHROPIC_API_KEY instead.
     litellm_params:
       model: anthropic/claude-opus-4-7
-      api_key: os.environ/ANTHROPIC_API_KEY
+      api_base: http://127.0.0.1:4002/subscription
+      api_key: not-needed
       input_cost_per_token: 0.000005
       output_cost_per_token: 0.000025
 
@@ -77,21 +82,24 @@ model_list:
   - model_name: claude-haiku-4-5
     litellm_params:
       model: anthropic/claude-haiku-4-5
-      api_key: os.environ/ANTHROPIC_API_KEY
+      api_base: http://127.0.0.1:4002/subscription
+      api_key: not-needed
       input_cost_per_token: 0.000001
       output_cost_per_token: 0.000005
 
   - model_name: claude-sonnet-4-6
     litellm_params:
       model: anthropic/claude-sonnet-4-6
-      api_key: os.environ/ANTHROPIC_API_KEY
+      api_base: http://127.0.0.1:4002/subscription
+      api_key: not-needed
       input_cost_per_token: 0.000003
       output_cost_per_token: 0.000015
 
   - model_name: claude-opus-4-7
     litellm_params:
       model: anthropic/claude-opus-4-7
-      api_key: os.environ/ANTHROPIC_API_KEY
+      api_base: http://127.0.0.1:4002/subscription
+      api_key: not-needed
       input_cost_per_token: 0.000005
       output_cost_per_token: 0.000025
 
@@ -158,7 +166,8 @@ model_list:
     # Cursor-shaped mirror of `claude-code`. Same upstream model.
     litellm_params:
       model: anthropic/claude-opus-4-7
-      api_key: os.environ/ANTHROPIC_API_KEY
+      api_base: http://127.0.0.1:4002/subscription
+      api_key: not-needed
       input_cost_per_token: 0.000005
       output_cost_per_token: 0.000025
 
@@ -166,21 +175,24 @@ model_list:
   - model_name: gpt-claude-haiku-4-5
     litellm_params:
       model: anthropic/claude-haiku-4-5
-      api_key: os.environ/ANTHROPIC_API_KEY
+      api_base: http://127.0.0.1:4002/subscription
+      api_key: not-needed
       input_cost_per_token: 0.000001
       output_cost_per_token: 0.000005
 
   - model_name: gpt-claude-sonnet-4-6
     litellm_params:
       model: anthropic/claude-sonnet-4-6
-      api_key: os.environ/ANTHROPIC_API_KEY
+      api_base: http://127.0.0.1:4002/subscription
+      api_key: not-needed
       input_cost_per_token: 0.000003
       output_cost_per_token: 0.000015
 
   - model_name: gpt-claude-opus-4-7
     litellm_params:
       model: anthropic/claude-opus-4-7
-      api_key: os.environ/ANTHROPIC_API_KEY
+      api_base: http://127.0.0.1:4002/subscription
+      api_key: not-needed
       input_cost_per_token: 0.000005
       output_cost_per_token: 0.000025
 

@@ -5,21 +5,21 @@
   <key>Label</key>          <string>com.local.dashboard</string>
   <key>RunAtLoad</key>      <true/>
   <key>KeepAlive</key>      <true/>
-  <key>WorkingDirectory</key><string>/Users/martinfr/Documents/GitHub/MacM4LocalAgent</string>
+  <key>WorkingDirectory</key><string>/Users/martinfr/LocalClineStack/MacM4LocalAgent</string>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>PATH</key>      <string>/Users/martinfr/Documents/GitHub/MacM4LocalAgent/.venvs/litellm/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
-    <key>PYTHONPATH</key><string>/Users/martinfr/Documents/GitHub/MacM4LocalAgent</string>
+    <key>PATH</key>      <string>/Users/martinfr/LocalClineStack/MacM4LocalAgent/.venvs/litellm/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>PYTHONPATH</key><string>/Users/martinfr/LocalClineStack/MacM4LocalAgent</string>
   </dict>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/martinfr/Documents/GitHub/MacM4LocalAgent/.venvs/litellm/bin/python</string>
+    <string>/Users/martinfr/LocalClineStack/MacM4LocalAgent/.venvs/litellm/bin/python</string>
     <string>-m</string><string>uvicorn</string>
     <string>dashboard.app:app</string>
     <string>--host</string><string>127.0.0.1</string>
     <string>--port</string><string>4001</string>
   </array>
-  <key>StandardOutPath</key><string>/Users/martinfr/Documents/GitHub/MacM4LocalAgent/.logs/dashboard.out.log</string>
-  <key>StandardErrorPath</key><string>/Users/martinfr/Documents/GitHub/MacM4LocalAgent/.logs/dashboard.err.log</string>
+  <key>StandardOutPath</key><string>/Users/martinfr/LocalClineStack/MacM4LocalAgent/.logs/dashboard.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/martinfr/LocalClineStack/MacM4LocalAgent/.logs/dashboard.err.log</string>
 </dict>
 </plist>

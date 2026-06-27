@@ -98,15 +98,31 @@ PROXY_RESP="$(curl -fsS "http://127.0.0.1:${PROXY_PORT}/health" 2>/dev/null || t
 if [[ -n "$PROXY_RESP" ]]; then
   PROXY_STATUS="$(echo "$PROXY_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','?'))" 2>/dev/null || true)"
   PROXY_MODE="$(echo "$PROXY_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('large_ctx_mode','?'))" 2>/dev/null || true)"
+  PROXY_AUTH="$(echo "$PROXY_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('claude_auth_mode','subscription'))" 2>/dev/null || true)"
   if [[ "$PROXY_STATUS" == "ok" ]]; then
-    ok "claude-proxy /health → status=ok large_ctx_mode=${PROXY_MODE}"
+    ok "claude-proxy /health → status=ok large_ctx_mode=${PROXY_MODE} claude_auth_mode=${PROXY_AUTH}"
+    # Claude Code path (large-ctx routing)
     if [[ "$PROXY_MODE" == "passthrough" ]]; then
-      ok "claude-proxy large-ctx uses Team OAuth (no ANTHROPIC_API_KEY needed)"
+      ok "claude-proxy large-ctx (Claude Code) uses Team OAuth passthrough"
     elif [[ "$PROXY_MODE" == "apikey" ]]; then
       if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
-        ok "claude-proxy large-ctx uses ANTHROPIC_API_KEY (apikey mode)"
+        ok "claude-proxy large-ctx (Claude Code) uses ANTHROPIC_API_KEY (apikey mode)"
       else
         fail "claude-proxy large_ctx_mode=apikey but ANTHROPIC_API_KEY is not set"
+      fi
+    fi
+    # LiteLLM subscription path
+    if [[ "$PROXY_AUTH" == "subscription" ]]; then
+      if security find-generic-password -s "Claude Code-credentials" -w >/dev/null 2>&1; then
+        ok "claude-proxy subscription endpoint: keychain token available"
+      else
+        fail "claude-proxy claude_auth_mode=subscription but keychain token not found (run: claude auth login)"
+      fi
+    elif [[ "$PROXY_AUTH" == "apikey" ]]; then
+      if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+        ok "claude-proxy subscription endpoint: using ANTHROPIC_API_KEY (apikey mode)"
+      else
+        fail "claude-proxy claude_auth_mode=apikey but ANTHROPIC_API_KEY is not set"
       fi
     fi
   else
@@ -152,11 +168,14 @@ smoke "hybrid-auto" "What is the capital of France?" "hybrid-auto tiny -> local-
 LONG="$(python3 -c "print('// noise\n' * 7000)")"
 smoke "hybrid-auto" "$LONG"$'\n\nSummarize the above noisy file in one sentence.' "hybrid-auto 17k tokens -> local-long"
 
-# claude-code only if ANTHROPIC_API_KEY is set.
-if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
-  smoke "claude-code" "Say hi in 3 words." "claude-code minimal"
+# claude-code: test if subscription token is available or ANTHROPIC_API_KEY is set.
+CLAUDE_AUTH="${CLAUDE_AUTH_MODE:-subscription}"
+if [[ "$CLAUDE_AUTH" == "subscription" ]] && security find-generic-password -s "Claude Code-credentials" -w >/dev/null 2>&1; then
+  smoke "claude-code" "Say hi in 3 words." "claude-code (subscription token)"
+elif [[ "$CLAUDE_AUTH" == "apikey" ]] && [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+  smoke "claude-code" "Say hi in 3 words." "claude-code (API key)"
 else
-  printf "  \033[1;33mSKIP\033[0m  claude-code (set ANTHROPIC_API_KEY to test)\n"
+  printf "  \033[1;33mSKIP\033[0m  claude-code (no subscription token or ANTHROPIC_API_KEY found)\n"
 fi
 
 echo

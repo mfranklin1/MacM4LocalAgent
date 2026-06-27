@@ -29,6 +29,19 @@ mkdir -p "$REPO_ROOT/.logs"
 # Render launchd plists with absolute paths and per-user values.
 # shellcheck disable=SC1091
 source "$REPO_ROOT/config/detected.env"
+# Source the root .env (one level up from REPO_ROOT) to pick up user-configured
+# values: ANTHROPIC_API_KEY, CLAUDE_AUTH_MODE, etc.  setdefault semantics:
+# already-exported vars win; this is a fallback for values not yet in the shell.
+ROOT_ENV="$REPO_ROOT/../.env"
+if [[ -f "$ROOT_ENV" ]]; then
+  while IFS= read -r _line; do
+    [[ "$_line" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "${_line// }" ]] && continue
+    _key="${_line%%=*}"
+    [[ -z "${!_key+x}" ]] && export "$_line" 2>/dev/null || true
+  done < "$ROOT_ENV"
+fi
+
 MLX_LOCAL_DIR="${MLX_LOCAL_DIR:-$REPO_ROOT/models/mlx}"
 
 : "${KV_CACHE_TYPE:=q4_0}"
@@ -36,6 +49,8 @@ MLX_LOCAL_DIR="${MLX_LOCAL_DIR:-$REPO_ROOT/models/mlx}"
 : "${OLLAMA_KEEP_ALIVE:=30m}"
 : "${OLLAMA_PORT:=11434}"
 : "${OLLAMA_TAG:=qwen3-coder-next:q4_K_M}"
+: "${CLAUDE_AUTH_MODE:=subscription}"
+: "${ANTHROPIC_API_KEY:=}"
 
 for src in "$REPO_ROOT"/launchd/*.plist; do
   case "$src" in *.rendered.plist) continue;; esac
@@ -50,6 +65,8 @@ for src in "$REPO_ROOT"/launchd/*.plist; do
       -e "s|@@HOME@@|$HOME|g" \
       -e "s|@@USER@@|$USER|g" \
       -e "s|@@TMPDIR@@|${TMPDIR:-/tmp}|g" \
+      -e "s|@@CLAUDE_AUTH_MODE@@|$CLAUDE_AUTH_MODE|g" \
+      -e "s|@@ANTHROPIC_API_KEY@@|$ANTHROPIC_API_KEY|g" \
       "$src" > "$out"
   log "rendered $(basename "$out") (KV=$KV_CACHE_TYPE, parallel=$OLLAMA_NUM_PARALLEL, keep_alive=$OLLAMA_KEEP_ALIVE)"
 done
