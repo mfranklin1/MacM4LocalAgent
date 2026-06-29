@@ -1,0 +1,87 @@
+{#
+  backend_status_card.html — HTMX partial for the backend lifecycle state card.
+
+  Context variables expected:
+    status  dict with keys:
+      active_backend              str   e.g. "mlx", "ollama", "claude", "unknown"
+      state                       str   one of ACTIVE / SWITCHING / FAILED / UNKNOWN
+      pending_requests            int
+      memory_pressure             str   e.g. "low", "medium", "high", "critical", "unknown"
+      last_switch_duration_ms     int|None
+      turbo_enabled               bool
+      context_compression_enabled bool
+#}
+
+{# ---- helpers ---- #}
+{% set state = status.state | upper %}
+
+{% if state == "ACTIVE" %}
+  {% set state_class = "badge-green" %}
+{% elif state == "SWITCHING" %}
+  {% set state_class = "badge-yellow" %}
+{% elif state == "FAILED" %}
+  {% set state_class = "badge-red" %}
+{% else %}
+  {% set state_class = "badge-muted" %}
+{% endif %}
+
+{% set mp = status.memory_pressure | lower %}
+{% if mp in ["high", "critical"] %}
+  {% set mp_class = "badge-red" %}
+{% elif mp == "medium" %}
+  {% set mp_class = "badge-yellow" %}
+{% elif mp == "low" %}
+  {% set mp_class = "badge-green" %}
+{% else %}
+  {% set mp_class = "badge-muted" %}
+{% endif %}
+
+<div class="card backend-status-card"
+     hx-get="/backend-status-card"
+     hx-trigger="every 5s"
+     hx-swap="outerHTML">
+
+  <h3>
+    Backend state
+    <span class="badge badge-muted backend-name">{{ status.active_backend }}</span>
+  </h3>
+
+  <div class="kv">
+    <span>State</span>
+    <b><span class="badge {{ state_class }}">{{ state }}</span></b>
+
+    <span>Pending requests</span>
+    <b>{{ status.pending_requests }}</b>
+
+    <span>Memory pressure</span>
+    <b><span class="badge {{ mp_class }}">{{ status.memory_pressure }}</span></b>
+
+    <span>Last switch</span>
+    <b>
+      {% if status.last_switch_duration_ms is not none and status.last_switch_duration_ms is not none %}
+        {{ status.last_switch_duration_ms }} ms
+      {% else %}
+        <span class="muted">—</span>
+      {% endif %}
+    </b>
+
+    <span>Turbo</span>
+    <b>
+      {% if status.turbo_enabled %}
+        <span class="badge badge-green">yes</span>
+      {% else %}
+        <span class="badge badge-muted">no</span>
+      {% endif %}
+    </b>
+
+    <span>Context compression</span>
+    <b>
+      {% if status.context_compression_enabled %}
+        <span class="badge badge-green">yes</span>
+      {% else %}
+        <span class="badge badge-muted">no</span>
+      {% endif %}
+    </b>
+  </div>
+
+</div>

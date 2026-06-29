@@ -113,6 +113,34 @@ model_list:
       api_key: not-needed
 
   # ----------------------------------------------------------------------
+  # Turbo context tiers (on-demand; only active when TURBO_ENABLED=1)
+  # ----------------------------------------------------------------------
+  # These backends run a separate mlx_lm.server on dedicated ports so the
+  # primary MLX (local-fast) and Ollama (local-long) are never unloaded mid-
+  # conversation. Ports 8084/8085 are reserved; port 8082 is the experimental
+  # turboquant-experimental-serve llama.cpp probe and must not be reused here.
+  #
+  # Model path is substituted from TURBO_MODEL_LOCAL_DIR (set by turbo-install);
+  # the placeholder renders to the absolute path of the downloaded 4-bit model.
+  # turbo_kv_bits requires mlx-lm ≥ the unreleased PR (ml-explore/mlx#3328);
+  # until that ships, TURBO_ENABLED must stay 0 — the backends won't start.
+  - model_name: local-turbo-256k
+    litellm_params:
+      model: openai/@@TURBO_MODEL_LOCAL_DIR@@
+      api_base: http://127.0.0.1:8084/v1
+      api_key: not-needed
+      input_cost_per_token: 0.0
+      output_cost_per_token: 0.0
+
+  - model_name: local-turbo-512k
+    litellm_params:
+      model: openai/@@TURBO_MODEL_LOCAL_DIR@@
+      api_base: http://127.0.0.1:8085/v1
+      api_key: not-needed
+      input_cost_per_token: 0.0
+      output_cost_per_token: 0.0
+
+  # ----------------------------------------------------------------------
   # gpt-* aliases for Cursor
   # ----------------------------------------------------------------------
   # Cursor's "Verify" button validates the model name client-side against

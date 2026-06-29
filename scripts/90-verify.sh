@@ -160,6 +160,7 @@ smoke() {
 echo
 echo "== Smoke matrix =="
 smoke "local-fast"  "Write a one-line Python function that returns x+1." "local-fast 1k tokens"
+smoke "local-long"  "List three advantages of static typing." "local-long direct"
 # Use a prompt that is clearly below ROUTE_FAST_MAX and contains no complexity-classifier keywords.
 smoke "hybrid-auto" "What is the capital of France?" "hybrid-auto tiny -> local-fast"
 

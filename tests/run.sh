@@ -19,7 +19,8 @@ ensure_pytest() {
   source "$VENV/bin/activate"
   uv pip install --quiet --upgrade \
     "pytest>=8.0" "pytest-cov>=5.0" "pytest-asyncio>=0.23" \
-    "fastapi>=0.110" "httpx>=0.27" "jinja2>=3.1" "python-multipart>=0.0.9"
+    "fastapi>=0.110" "httpx>=0.27" "jinja2>=3.1" "python-multipart>=0.0.9" \
+    "pyyaml>=6.0"
 }
 
 PASS=0; FAIL=0

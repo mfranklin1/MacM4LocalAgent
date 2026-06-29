@@ -127,3 +127,33 @@ td.elapsed { color: var(--ok); font-variant-numeric: tabular-nums; }
   vertical-align: middle;
   animation: active-pulse 1.6s ease-in-out infinite;
 }
+
+/* ---- generic badge ---- */
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.badge-green  { background: rgba(61,  220, 151, 0.18); color: var(--ok);   }
+.badge-yellow { background: rgba(245, 166,  35, 0.18); color: var(--warn); }
+.badge-red    { background: rgba(255, 107, 107, 0.18); color: var(--bad);  }
+.badge-muted  { background: #232b3a;                   color: var(--muted);}
+
+/* ---- backend status card (displayed above the main stats section) ---- */
+.backend-status-card {
+  margin-bottom: 20px;
+}
+.backend-status-card h3 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.backend-name {
+  font-size: 13px;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+}

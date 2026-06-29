@@ -35,16 +35,6 @@ def _resp(content: str, in_tok: int = 1, out_tok: int = 1) -> httpx.Response:
     })
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Pre-existing failure unrelated to the loopback-only / no-auth + Cline-install PR. "
-        "The fake model 'openai/qwen3-coder-next' is classified as local-long by the current "
-        "tier classifier in cost.ingest, not local-fast as this test assumes. Same outcome on "
-        "main before this PR -- captured here as xfail so the rest of CI is green. Fix in a "
-        "follow-up by either updating the classifier mapping or switching the test fixture to "
-        "use an mlx-community/* model id."
-    ),
-)
 def test_full_flow(tmp_db, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     router = SizeBasedRouter()
 
@@ -59,7 +49,7 @@ def test_full_flow(tmp_db, client: TestClient, monkeypatch: pytest.MonkeyPatch) 
     # ---- 2) record three different-tier requests
     now = int(time.time())
     router.log_success_event(
-        kwargs={"model": "openai/qwen3-coder-next", "metadata": {"route_reason": "<= 16k"}},
+        kwargs={"model": "mlx-community/Qwen3-Coder-Next-4bit", "metadata": {"route_reason": "<= 16k"}},
         response_obj={"usage": {"prompt_tokens": 1500, "completion_tokens": 600}},
         start_time=time.time(),
         end_time=time.time() + 0.2,
@@ -94,7 +84,7 @@ def test_full_flow(tmp_db, client: TestClient, monkeypatch: pytest.MonkeyPatch) 
     page = client.get("/stats").text
     assert "claude-sonnet-4-6" in page
     assert "ollama/qwen3-coder:30b" in page
-    assert "openai/qwen3-coder-next" in page
+    assert "mlx-community/Qwen3-Coder-Next-4bit" in page
 
     # ---- 6) A/B comparator persists and the dashboard surfaces it
     def handler(req: httpx.Request) -> httpx.Response:

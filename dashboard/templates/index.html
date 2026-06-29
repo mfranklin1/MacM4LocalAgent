@@ -8,6 +8,17 @@
     Sonnet 4.6 ($3 / $15 per 1M).
   </p>
 
+  {# Backend lifecycle state card — HTMX-polled every 5 s.
+     The card template owns its own hx-get / hx-trigger / hx-swap
+     attributes on the outermost element, so the initial load is
+     driven by "load" here and subsequent refreshes are self-driving. #}
+  <div hx-get="/backend-status-card" hx-trigger="load" hx-swap="outerHTML">
+    <div class="card backend-status-card">
+      <h3>Backend state <span class="badge badge-muted">…</span></h3>
+      <p class="muted small">loading…</p>
+    </div>
+  </div>
+
   <div id="stats" hx-get="/stats" hx-trigger="load, every 5s" hx-swap="innerHTML">
     <p class="muted">loading...</p>
   </div>
