@@ -37,14 +37,16 @@ Core principle:
 
 Two reconciliation points the plan must address:
 
-- The repo already uses the name "TurboQuant" for an **Ollama KV-cache quantization** track (`tq3`/`tq4`, `make turboquant-*`, `docs/turboquant.md`, experimental llama.cpp server on **:8082**). Your spec's "TurboQuant MLX-LM tiers" are a *different* mechanism (MLX-LM serving with quantized KV cache / `turbo_kv_bits`). The plan disambiguates these and avoids the **:8082 port collision** (your registry proposes 8082/8083; the existing experimental server already owns 8082).
-- `config/detected.env` on this host currently shows `q4` / `qwen3-coder-next:q4`, not the Q8 your model-tier decision assumes. The plan includes a detection reconciliation so a 128 GB box selects Q8.
+- The repo already uses the name "TurboQuant" for an **Ollama KV-cache quantization** track (`tq3`/`tq4`, `make turboquant-*`, `docs/turboquant.md`, experimental llama.cpp server on **:8082**). Your spec's "TurboQuant MLX-LM tiers" are a *different* mechanism (MLX-LM serving with quantized KV cache / `turbo_kv_bits`). **Resolved below**: the backend registry now uses ports 8084/8085 to avoid the existing `:8082` collision.
+- `config/detected.env` on this host currently shows `q4` / `qwen3-coder-next:q4`, not the Q8 your model-tier decision assumes. **Resolved below**: the Current Baseline now reflects the actual detected tier (q4). Whether to force Q8 on 128 GB machines is an open policy question — see notes in Current Baseline.
 
 ---
 
 # Part 1 — TurboQuant Lifecycle Switching Plan
 
 _(Includes the Context Janitor and Context Compression / Headroom updates further down.)_
+
+> **Status of MLX-LM `turbo_kv_bits`**: As of June 2026, `turbo_kv_bits` is **not yet shipped in a released version of mlx-lm**. This mirrors the Ollama tq3 situation (see `docs/turboquant.md`). The 256k/512k tier architecture is designed and ready to wire up; the lifecycle manager, backend registry, and launchd plists can be built now, but the MLX-LM serve path needs upstream support before the turbo backends go live. Track the relevant MLX-LM PR and add a `make turbo-status` target similar to `make turboquant-status`.
 
 ## Objective
 
@@ -64,9 +66,10 @@ The key design constraint is that large model backends cannot all remain residen
 
 Current repo behavior:
 
-- `local-fast`: MLX short-context fast path.
-- `local-long`: Ollama long-context path.
-- On 128GB machines, detection selects `qwen3-coder-next:q8_0` and `LOCAL_LONG_CTX=131072`.
+- `local-fast`: MLX short-context fast path (MLX_PORT=8081, `mlx-community/Qwen3-Coder-Next-4bit`).
+- `local-long`: Ollama long-context path (OLLAMA_PORT=11434, `qwen3-coder-next:q4`).
+- On this 128 GB M5 Max, `config/detected.env` currently selects `QUANT_TIER=q4` / `qwen3-coder-next:q4` and `LOCAL_LONG_CTX=131072`. **Planned change**: upgrade to `q8_0` on 128 GB machines — better output quality; the KV cache is ~2× larger but fits. Requires updating `scripts/00-detect.sh` to prefer `q8_0` at ≥ 128 GB RAM before the lifecycle work begins.
+- Cline traffic escalates to Claude when the full request exceeds 85% of ROUTE_LONG_MAX (~111k tokens, via saturation check in `router/route_by_size.py`).
 - Requests beyond the local long context route to Claude or external Anthropic.
 
 Target behavior:
@@ -208,8 +211,11 @@ backends:
 
   local-turbo-256k:
     kind: mlx-turbo
-    model_path: models/Qwen2.5-Coder-32B-Instruct-4bit
-    port: 8082
+    # Model family TBD: Qwen2.5-Coder-32B-Instruct-4bit (plan original) vs
+    # Qwen3-Coder-Next-4bit (current family). Verify MLX-LM turbo_kv_bits
+    # support before committing to either. See open questions below.
+    model_path: /Users/martinfr/Documents/GitHub/MacM4LocalAgent/models/Qwen2.5-Coder-32B-Instruct-4bit
+    port: 8084  # 8082 is owned by turboquant-experimental-serve (llama.cpp); 8083 reserved as buffer
     max_context: 262144
     turbo_kv_bits: 3
     turbo_fp16_layers: 2
@@ -219,8 +225,8 @@ backends:
 
   local-turbo-512k:
     kind: mlx-turbo
-    model_path: models/Qwen2.5-Coder-32B-Instruct-4bit
-    port: 8083
+    model_path: /Users/martinfr/Documents/GitHub/MacM4LocalAgent/models/Qwen2.5-Coder-32B-Instruct-4bit
+    port: 8085
     max_context: 524288
     turbo_kv_bits: 3
     turbo_fp16_layers: 4
@@ -476,7 +482,7 @@ Add to `config/detected.env` or generated config:
 ```bash
 TURBO_ENABLED=0
 TURBO_MODEL_REPO="mlx-community/Qwen2.5-Coder-32B-Instruct-4bit"
-TURBO_MODEL_LOCAL_DIR="models/mlx-community_Qwen2.5-Coder-32B-Instruct-4bit"
+TURBO_MODEL_LOCAL_DIR="/Users/martinfr/Documents/GitHub/MacM4LocalAgent/models/mlx-community_Qwen2.5-Coder-32B-Instruct-4bit"
 TURBO_KV_BITS=3
 TURBO_FP16_LAYERS_256=2
 TURBO_FP16_LAYERS_512=4
@@ -600,6 +606,18 @@ The user should never see a silent hang with no explanation.
 ---
 
 ## Implementation Phases
+
+### Phase 0: Prerequisite — upgrade detection to q8_0 on 128 GB machines
+
+Deliverables:
+
+```text
+scripts/00-detect.sh — prefer q8_0 when RAM_GB >= 128
+config/detected.env — regenerated after detect
+make detect && make verify
+```
+
+This must land before any lifecycle work. The lifecycle manager's memory-pressure gate needs to know the actual resident model size; using q4 estimates with a q8 model will produce wrong gate thresholds.
 
 ### Phase 1: Add backend registry and config
 
@@ -789,7 +807,7 @@ Example 2:
 Add these variables:
 
 - CONTEXT_JANITOR_ENABLED=1
-- CONTEXT_JANITOR_MODEL=local-long-128k
+- CONTEXT_JANITOR_MODEL=local-long-128k  # default; Part 2 recommends Qwen3-Coder-30B-A3B once benchmarked
 - CONTEXT_JANITOR_TRIGGER_TOKENS=64000
 - CONTEXT_JANITOR_GROWTH_TRIGGER_TOKENS=20000
 - CONTEXT_JANITOR_MAX_LATENCY_SECONDS=45
@@ -1377,9 +1395,10 @@ Keep Qwen3-Coder-Next as the main stable local model. Add Qwen3-Coder-30B-A3B as
 
 ## Target
 
-Fork: https://github.com/mfranklin1/cline
+Fork: https://github.com/mfranklin1/cline (remote: `origin`, branch: `main`)
 
-Local backend project: https://github.com/martinfr-certifyos/MacM4LocalAgent
+Local backend project: https://github.com/mfranklin1/MacM4LocalAgent
+*(Note: push target is the mfranklin1 personal account — never push to martinfr-certifyos org.)*
 
 Note: the GitHub connector can read this fork but does not have push permission, so this is a Cline/Codex/manual implementation plan rather than a committed change.
 
@@ -1518,9 +1537,10 @@ Keep disabled by default until benchmarked.
 
 Recommended defaults:
 
-- Context Janitor disabled initially;
+- Context Janitor disabled initially (enable via settings toggle; flip to on once first benchmark pass is complete);
+- runs automatically in the background — no per-turn approval prompt, surfaces only a summary message when cleanup materially changes routing;
 - Headroom enabled when Janitor is enabled;
-- janitor model is local-long-128k;
+- janitor model is local-long-128k (upgrade to Qwen3-Coder-30B-A3B once Ollama tag is confirmed);
 - trigger at roughly 64k tokens;
 - growth trigger at roughly 20k additional tokens;
 - max janitor latency around 45 seconds;
@@ -1587,8 +1607,10 @@ Cline owns semantic task memory. MacM4LocalAgent owns backend routing and lifecy
 
 ## Open questions
 
-1. Which branch contains the M4 plugin integration?
-2. Is the M4 integration implemented as an API provider, MCP integration, or custom proxy target?
+1. ~~Which branch contains the M4 plugin integration?~~ **Answered**: `main` branch of `mfranklin1/cline`.
+2. ~~Is the M4 integration implemented as an API provider, MCP integration, or custom proxy target?~~ **Answered**: Standard `litellm` API provider type (OpenAI-compatible endpoint at `localhost:4000`). Confirmed in `src/shared/api.ts`.
 3. Should janitor storage live under VS Code global storage or workspace storage?
 4. Should cleanup reports appear in the chat transcript or only in diagnostics?
 5. Should cleanup run automatically or require explicit approval during early testing?
+6. *(New)* Which MLX model should the turbo tiers use — `Qwen2.5-Coder-32B-Instruct-4bit` (as originally specced) or `Qwen3-Coder-Next-4bit` (the current model family already in use)? Needs verification that the target model has an MLX-LM quantised release and that MLX-LM actually supports `turbo_kv_bits`.
+7. *(New)* What is the exact Ollama model tag for Qwen3-Coder-30B-A3B? Needed to configure the janitor model and add it to the backend registry.
