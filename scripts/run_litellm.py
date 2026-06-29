@@ -65,6 +65,42 @@ import router.route_by_size  # noqa: F401,E402
 
 from litellm import run_server  # noqa: E402
 
+# Serve backend status endpoints on a dedicated sidecar port (4010).
+# LiteLLM instruments and freezes its ASGI stack at import time, so neither
+# include_router(), add_api_route(), nor add_middleware() survive. Running a
+# second lightweight uvicorn server in a daemon thread sidesteps all of that.
+try:
+    import threading as _threading
+    import uvicorn as _uvicorn
+    from fastapi import FastAPI as _FastAPI
+    from router.status_api import lifecycle_manager as _lm
+    from starlette.responses import JSONResponse as _JSONResponse
+
+    _status_app = _FastAPI(title="MacM4 Backend Status API", docs_url=None, redoc_url=None)
+
+    @_status_app.get("/backend/status")
+    def _status():
+        return _lm.get_status()
+
+    @_status_app.get("/backend/pending")
+    def _pending():
+        return {"pending_request_ids": _lm.list_pending()}
+
+    @_status_app.post("/backend/reset-failure")
+    def _reset():
+        previous = _lm.reset_failure()
+        return {"ok": previous == "FAILED", "previous_state": previous,
+                "current_state": _lm.get_status()["state"]}
+
+    def _run_status_server():
+        _uvicorn.run(_status_app, host="127.0.0.1", port=4010, log_level="warning")
+
+    _t = _threading.Thread(target=_run_status_server, daemon=True, name="status-api")
+    _t.start()
+    print("[run_litellm] backend status API sidecar started on :4010", file=sys.stderr)
+except Exception as _e:
+    print(f"[run_litellm] could not start backend status sidecar: {_e}", file=sys.stderr)
+
 if __name__ == "__main__":
     # Pass argv explicitly through Click's main() to defeat a regression in
     # newer click/uvicorn pairings where `run_server()`'s implicit __call__

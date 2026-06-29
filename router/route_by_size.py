@@ -1680,16 +1680,10 @@ class SizeBasedRouter(_LiteLLMCustomLogger):
 # Module-level instance so LiteLLM can import either the class or this object.
 proxy_handler_instance = SizeBasedRouter()
 
-# Mount the backend status endpoints onto LiteLLM's FastAPI app so that
-# GET /backend/status, GET /backend/pending, and POST /backend/reset-failure
-# are served on the same port as the proxy.
-try:
-    from litellm.proxy.proxy_server import app as _litellm_app
-    from router.status_api import router as _backend_router
-    _litellm_app.include_router(_backend_router)
-except Exception as _e:
-    import sys
-    print(f"[router] could not mount backend status endpoints: {_e}", file=sys.stderr)
+# Backend status endpoints (/backend/status etc.) are mounted in
+# scripts/run_litellm.py via app.add_api_route() — done there because
+# LiteLLM wraps include_router() in _IncludedRouter and the routes don't
+# survive the proxy middleware chain when added at import time here.
 
 
 if __name__ == "__main__":
