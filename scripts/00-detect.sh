@@ -49,6 +49,7 @@ DISK_FREE_GB="$(df -g / | awk 'NR==2 {print $4}')"
 # pins an OLLAMA_TAG (because we previously downloaded it), keep that pin
 # - the user's bandwidth was already spent, and re-pulling a different
 # quant on every `make detect` would be hostile.
+# 96 GB threshold (not 128 GB): accounts for ~30 GB OS + system overhead on M-series 128 GB machines.
 if (( RAM_GB >= 96 )); then
   QUANT_TIER="q8"
   MLX_QUANT="8bit"

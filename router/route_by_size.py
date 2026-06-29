@@ -1105,7 +1105,7 @@ def _model_to_tier(model: str) -> str:
     if (
         model.startswith("ollama/")
         or model == "local-long"
-        or "qwen3-coder-next" in m_lower
+        or ("qwen3-coder-next" in m_lower and "mlx" not in m_lower)
         or m_lower.endswith((":q4_k_m", ":q8_0", ":q4_0"))
     ):
         return "local-long"
@@ -1679,6 +1679,17 @@ class SizeBasedRouter(_LiteLLMCustomLogger):
 
 # Module-level instance so LiteLLM can import either the class or this object.
 proxy_handler_instance = SizeBasedRouter()
+
+# Mount the backend status endpoints onto LiteLLM's FastAPI app so that
+# GET /backend/status, GET /backend/pending, and POST /backend/reset-failure
+# are served on the same port as the proxy.
+try:
+    from litellm.proxy.proxy_server import app as _litellm_app
+    from router.status_api import router as _backend_router
+    _litellm_app.include_router(_backend_router)
+except Exception as _e:
+    import sys
+    print(f"[router] could not mount backend status endpoints: {_e}", file=sys.stderr)
 
 
 if __name__ == "__main__":

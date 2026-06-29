@@ -346,37 +346,54 @@ class BackendLifecycleManager:
             the current active backend), ``False`` if the backend was already
             active and no switch was needed.
         """
-        async with self._lock:
-            if self._active_backend == target_backend:
-                return False
+        # 420 s = 7 min: enough for a cold MLX/Ollama model load on M-series.
+        # Falls back to external (Claude API) on timeout so no request is lost.
+        MAX_SWITCH_WAIT_SECONDS = 420
 
-            # Determine transition state from target name when not supplied.
-            if transition_state is None:
-                if "256" in target_backend:
-                    transition_state = BackendState.SWITCHING_TO_TURBO_256K
-                elif "512" in target_backend:
-                    transition_state = BackendState.SWITCHING_TO_TURBO_512K
+        async def _do_switch() -> bool:
+            async with self._lock:
+                if self._active_backend == target_backend:
+                    return False
 
-            if transition_state is not None:
-                self._state = transition_state
+                # Determine transition state from target name when not supplied.
+                _transition = transition_state
+                if _transition is None:
+                    if "256" in target_backend:
+                        _transition = BackendState.SWITCHING_TO_TURBO_256K
+                    elif "512" in target_backend:
+                        _transition = BackendState.SWITCHING_TO_TURBO_512K
 
-            self.begin_switch(target_backend, message=message)
+                if _transition is not None:
+                    self._state = _transition
 
-            # Determine active state from target name when not supplied.
-            if active_state is None:
-                if "256" in target_backend:
-                    active_state = BackendState.ACTIVE_TURBO_256K
-                elif "512" in target_backend:
-                    active_state = BackendState.ACTIVE_TURBO_512K
-                elif "fast" in target_backend:
-                    active_state = BackendState.ACTIVE_FAST
-                elif "128" in target_backend:
-                    active_state = BackendState.ACTIVE_LONG_128K
+                self.begin_switch(target_backend, message=message)
 
-            if active_state is not None:
-                self._state = active_state
-            self.complete_switch(target_backend, message=message)
-            return True
+                # Determine active state from target name when not supplied.
+                _active = active_state
+                if _active is None:
+                    if "256" in target_backend:
+                        _active = BackendState.ACTIVE_TURBO_256K
+                    elif "512" in target_backend:
+                        _active = BackendState.ACTIVE_TURBO_512K
+                    elif "fast" in target_backend:
+                        _active = BackendState.ACTIVE_FAST
+                    elif "128" in target_backend:
+                        _active = BackendState.ACTIVE_LONG_128K
+
+                if _active is not None:
+                    self._state = _active
+                self.complete_switch(target_backend, message=message)
+                return True
+
+        try:
+            return await asyncio.wait_for(_do_switch(), timeout=MAX_SWITCH_WAIT_SECONDS)
+        except asyncio.TimeoutError:
+            self._state = BackendState.FALLING_BACK_EXTERNAL
+            self._last_status_message = (
+                f"Switch to {target_backend} timed out after {MAX_SWITCH_WAIT_SECONDS}s; "
+                "falling back to external."
+            )
+            return False
 
 
 # ---------------------------------------------------------------------------

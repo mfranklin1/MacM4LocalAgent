@@ -8,7 +8,7 @@ LAUNCHD_DIR := $(REPO_ROOT)/launchd
 LAUNCH_AGENTS := $(HOME)/Library/LaunchAgents
 PLISTS := com.local.ollama com.local.mlx com.local.litellm com.local.dashboard com.local.ollama-warm com.local.watchdog com.local.claude-proxy
 
-.PHONY: help detect install reconfigure start stop restart status dashboard verify watchdog report compare clean nuke test test-py test-sh lint finalize downloads downloads-watch wait-and-finalize resume-ollama bench bench-local bench-claude bench-cursor bench-report bench-pull-spend turboquant-status turboquant-upgrade turboquant-watch turboquant-experimental-build turboquant-experimental-serve turboquant-experimental-stop turboquant-experimental-status turboquant-experimental-ab turboquant-experimental-nuke perf perf-short perf-stress perf-prefix perf-prefix-cold check-pricing cline warm offline online offline-status worktree worktree-rm worktree-sync worktree-list backend-status backend-stop-large turbo-install turbo-enable turbo-disable turbo-status turbo-start-256 turbo-stop turbo-bench janitor-enable janitor-disable janitor-status janitor-show-ledger janitor-show-active-context janitor-reset upgrade-to-q8 TURBO_ENABLED CONTEXT_JANITOR_ENABLED TURBO_MODEL_LOCAL_DIR
+.PHONY: help detect install reconfigure start stop restart status dashboard verify watchdog report compare clean nuke test test-py test-sh lint finalize downloads downloads-watch wait-and-finalize resume-ollama bench bench-local bench-claude bench-cursor bench-report bench-pull-spend turboquant-status turboquant-upgrade turboquant-watch turboquant-experimental-build turboquant-experimental-serve turboquant-experimental-stop turboquant-experimental-status turboquant-experimental-ab turboquant-experimental-nuke perf perf-short perf-stress perf-prefix perf-prefix-cold check-pricing cline warm offline online offline-status worktree worktree-rm worktree-sync worktree-list backend-status backend-stop-large turbo-install turbo-enable turbo-disable turbo-status turbo-start-256 turbo-start-512 turbo-verify turbo-stop turbo-bench janitor-enable janitor-disable janitor-status janitor-show-ledger janitor-show-active-context janitor-reset janitor-run janitor-bench context-compression-install context-compression-enable context-compression-disable context-compression-status context-compression-bench headroom-verify upgrade-to-q8 TURBO_ENABLED CONTEXT_JANITOR_ENABLED TURBO_MODEL_LOCAL_DIR
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -206,7 +206,7 @@ test: ## Run the full test suite (Python + shell)
 test-py: ## Run only the Python test suite
 	@if [ ! -d $(REPO_ROOT)/.venvs/test ]; then uv venv --python 3.12 $(REPO_ROOT)/.venvs/test; fi
 	@. $(REPO_ROOT)/.venvs/test/bin/activate && \
-	  uv pip install --quiet --upgrade pytest pytest-asyncio pytest-cov fastapi httpx jinja2 python-multipart && \
+	  uv pip install --quiet --upgrade pytest pytest-asyncio pytest-cov fastapi httpx jinja2 python-multipart pyyaml && \
 	  PYTHONPATH=$(REPO_ROOT) pytest -q tests
 
 test-sh: ## Run only the shell test suites
@@ -306,6 +306,12 @@ turbo-status: ## Check turbo backend readiness (model downloaded? mlx-lm turbo_k
 turbo-start-256: ## Manually start the 256k turbo backend (lifecycle manager handles this automatically)
 	@launchctl bootstrap gui/$$(id -u) $(LAUNCHD)/com.local.turbo-256k.plist
 
+turbo-start-512: ## Manually start the 512k turbo backend (lifecycle manager handles this automatically)
+	@launchctl bootstrap gui/$$(id -u) $(LAUNCHD)/com.local.turbo-512k.plist
+
+turbo-verify: ## Run the full turbo readiness check (model, mlx_lm, launchd, HTTP health)
+	@bash $(SCRIPTS)/turbo-status.sh
+
 turbo-stop: ## Stop all turbo backends
 	@launchctl bootout gui/$$(id -u) $(LAUNCHD)/com.local.turbo-256k.plist 2>/dev/null || true
 	@launchctl bootout gui/$$(id -u) $(LAUNCHD)/com.local.turbo-512k.plist 2>/dev/null || true
@@ -349,6 +355,42 @@ janitor-show-active-context: ## Print the active context pack
 
 janitor-reset: ## Clear all janitor state (ledger, active context pack, manifests)
 	@rm -rf .runtime/context_janitor && echo 'janitor state cleared'
+
+janitor-run: ## Trigger an immediate janitor pass (Cline must be running; sets janitor trigger via env)
+	@echo 'NOTE: the context janitor runs inside the Cline VS Code extension, not this proxy.'
+	@echo 'To trigger a pass: open Cline settings and toggle "Context Janitor" off → on, or'
+	@echo 'adjust contextJanitorTriggerTokens below the current context window size.'
+
+janitor-bench: ## Benchmark janitor model latency (requires proxy running + local-long healthy)
+	@python3 bench/runner.py --backends local-long --task janitor-latency
+
+# ---------- context compression ----------
+
+context-compression-install: ## Enable HeadroomAdapter mechanical compression in Cline (always-on by default)
+	@echo 'HeadroomAdapter is always active when contextJanitorHeadroomEnabled=true in Cline settings.'
+	@echo 'Run "make cline-install" to rebuild + install the extension if you changed janitor source.'
+
+context-compression-enable: ## Enable context compression in Cline settings (HeadroomAdapter + Janitor)
+	@sed -i '' 's/^CONTEXT_JANITOR_ENABLED=.*/CONTEXT_JANITOR_ENABLED=1/' config/detected.env || echo 'CONTEXT_JANITOR_ENABLED=1' >> config/detected.env
+	@echo 'Set CONTEXT_JANITOR_ENABLED=1 in detected.env.'
+	@echo 'NOTE: the janitor toggle lives in the Cline extension settings, not this proxy.'
+
+context-compression-disable: ## Disable context compression (sets janitor flag off; HeadroomAdapter stays on)
+	@sed -i '' 's/^CONTEXT_JANITOR_ENABLED=.*/CONTEXT_JANITOR_ENABLED=0/' config/detected.env || echo 'CONTEXT_JANITOR_ENABLED=0' >> config/detected.env
+	@echo 'Set CONTEXT_JANITOR_ENABLED=0 in detected.env.'
+
+context-compression-status: ## Show current compression config and last janitor run stats
+	@echo "CONTEXT_JANITOR_ENABLED=$$(grep ^CONTEXT_JANITOR_ENABLED config/detected.env 2>/dev/null | cut -d= -f2 || echo 0)"
+	@python3 -c "import json,pathlib; p=pathlib.Path('.runtime/context_janitor/status.json'); print(json.dumps(json.loads(p.read_text()),indent=2) if p.exists() else 'janitor has not run yet')"
+
+context-compression-bench: ## Benchmark HeadroomAdapter + Janitor compression ratio on sample contexts
+	@python3 bench/runner.py --backends local-long --task compression-ratio
+
+headroom-verify: ## Verify HeadroomAdapter is active and deduplicating file blocks
+	@python3 -c "import sys; sys.path.insert(0, '.'); \
+	  [print('Proxy status:', __import__('router.status_api', fromlist=['lifecycle_manager']).lifecycle_manager.get_status()['state'])] if True else None" 2>/dev/null || echo "proxy not importable (start it first)"
+	@echo 'HeadroomAdapter: check Cline output console for [HeadroomAdapter] log lines.'
+	@echo 'Enable verbose logging by setting CLINE_HEADROOM_DEBUG=1 before starting VS Code.'
 
 # ---------- q8 upgrade ----------
 

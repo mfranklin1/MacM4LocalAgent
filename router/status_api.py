@@ -58,6 +58,7 @@ class BackendStatusResponse(BaseModel):
     memory_pressure: str
     last_status_message: str
     turbo_enabled: bool
+    last_switch_duration_ms: Optional[int] = None
 
 
 class PendingResponse(BaseModel):
@@ -92,6 +93,8 @@ class LifecycleManager:
         self._active_backend: str = "local-long-128k"
         self._target_backend: Optional[str] = None
         self._switch_started_at: Optional[str] = None
+        self._switch_start_epoch: Optional[float] = None
+        self._last_switch_duration_ms: Optional[int] = None
         self._memory_pressure: str = "low"
         self._last_status_message: str = ""
         self._turbo_enabled: bool = False
@@ -116,6 +119,7 @@ class LifecycleManager:
                 "memory_pressure": self._memory_pressure,
                 "last_status_message": self._last_status_message,
                 "turbo_enabled": self._turbo_enabled,
+                "last_switch_duration_ms": self._last_switch_duration_ms,
             }
 
     def list_pending(self) -> list[str]:
@@ -146,12 +150,18 @@ class LifecycleManager:
             self._switch_started_at = time.strftime(
                 "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
             )
+            self._switch_start_epoch = time.monotonic()
             if message:
                 self._last_status_message = message
 
     def complete_switch(self, new_backend: str, message: str = "") -> None:
         """Record a completed backend switch."""
         with self._lock:
+            if self._switch_start_epoch is not None:
+                self._last_switch_duration_ms = int(
+                    (time.monotonic() - self._switch_start_epoch) * 1000
+                )
+                self._switch_start_epoch = None
             self._active_backend = new_backend
             self._target_backend = None
             self._switch_started_at = None

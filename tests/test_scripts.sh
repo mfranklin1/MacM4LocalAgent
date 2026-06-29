@@ -34,7 +34,9 @@ for t in "${TARGETS_REQUIRED[@]}"; do
 done
 
 # 4) launchd plists are well-formed XML.
+# Skip *.rendered.plist — they may contain unsubstituted @@ tokens when turbo is disabled.
 for p in "$REPO_ROOT"/launchd/*.plist; do
+  case "$p" in *.rendered.plist) continue;; esac
   if plutil -lint "$p" >/dev/null 2>&1; then ok "plist: ${p##*/}"; else fail "plist: ${p##*/}"; fi
 done
 
