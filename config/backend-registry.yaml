@@ -1,0 +1,67 @@
+# Backend registry for MacM4LocalAgent lifecycle switching.
+# Loaded by router/backend_registry.py at startup.
+# All ports, paths, and context limits mirror config/detected.env conventions.
+# TurboQuant (local-turbo-256k / local-turbo-512k) backends are on-demand;
+# they are NOT started until TURBO_ENABLED=1 is set in detected.env.
+# Ports 8082/8083 are reserved: 8082 = turboquant-experimental-serve (llama.cpp A/B probe).
+
+backends:
+  local-fast:
+    kind: mlx
+    port_env: MLX_PORT          # resolved from detected.env at runtime
+    max_context: 16384
+    resident_policy: always_on
+    startup_timeout_seconds: 60
+    idle_timeout_seconds: 0     # never unload
+
+  local-long-128k:
+    kind: ollama
+    model_env: OLLAMA_TAG       # resolved from detected.env
+    port_env: OLLAMA_PORT
+    max_context: 131072          # default; overridden at runtime by LOCAL_LONG_CTX from detected.env
+    max_context_env: LOCAL_LONG_CTX
+    resident_policy: warm_optional
+    startup_timeout_seconds: 180
+    idle_timeout_seconds: 1800  # 30 min
+
+  local-turbo-256k:
+    kind: mlx-turbo
+    # Model: Qwen2.5-Coder-32B-Instruct-4bit. Download separately.
+    # turbo_kv_bits requires mlx-lm ≥ the unreleased PR that adds turbo KV support.
+    # Until that lands, TURBO_ENABLED must remain 0.
+    model_repo: mlx-community/Qwen2.5-Coder-32B-Instruct-4bit
+    model_path_env: TURBO_MODEL_LOCAL_DIR
+    port: 8084
+    max_context: 262144
+    turbo_kv_bits: 3
+    turbo_fp16_layers: 2
+    resident_policy: on_demand
+    startup_timeout_seconds: 240
+    idle_timeout_seconds: 900   # 15 min
+
+  local-turbo-512k:
+    kind: mlx-turbo
+    model_repo: mlx-community/Qwen2.5-Coder-32B-Instruct-4bit
+    model_path_env: TURBO_MODEL_LOCAL_DIR
+    port: 8085
+    max_context: 524288
+    turbo_kv_bits: 3
+    turbo_fp16_layers: 4
+    resident_policy: on_demand
+    startup_timeout_seconds: 360
+    idle_timeout_seconds: 600   # 10 min
+
+tier_order:
+  # Ordered cheapest-to-most-expensive. The lifecycle manager escalates
+  # through this list until it finds a tier whose max_context covers the
+  # compressed token count.
+  - local-fast
+  - local-long-128k
+  - local-turbo-256k
+  - local-turbo-512k
+
+fallback:
+  # Used when all local tiers are exhausted or unhealthy, or TURBO_ENABLED=0
+  # and the request exceeds local-long-128k.
+  target: claude-external
+  offline_message: "This request exceeds the available local context and offline mode prevents external fallback."

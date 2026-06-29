@@ -8,7 +8,7 @@ LAUNCHD_DIR := $(REPO_ROOT)/launchd
 LAUNCH_AGENTS := $(HOME)/Library/LaunchAgents
 PLISTS := com.local.ollama com.local.mlx com.local.litellm com.local.dashboard com.local.ollama-warm com.local.watchdog com.local.claude-proxy
 
-.PHONY: help detect install reconfigure start stop restart status dashboard verify watchdog report compare clean nuke test test-py test-sh lint finalize downloads downloads-watch wait-and-finalize resume-ollama bench bench-local bench-claude bench-cursor bench-report bench-pull-spend turboquant-status turboquant-upgrade turboquant-watch turboquant-experimental-build turboquant-experimental-serve turboquant-experimental-stop turboquant-experimental-status turboquant-experimental-ab turboquant-experimental-nuke perf perf-short perf-stress perf-prefix perf-prefix-cold check-pricing cline warm offline online offline-status worktree worktree-rm worktree-sync worktree-list
+.PHONY: help detect install reconfigure start stop restart status dashboard verify watchdog report compare clean nuke test test-py test-sh lint finalize downloads downloads-watch wait-and-finalize resume-ollama bench bench-local bench-claude bench-cursor bench-report bench-pull-spend turboquant-status turboquant-upgrade turboquant-watch turboquant-experimental-build turboquant-experimental-serve turboquant-experimental-stop turboquant-experimental-status turboquant-experimental-ab turboquant-experimental-nuke perf perf-short perf-stress perf-prefix perf-prefix-cold check-pricing cline warm offline online offline-status worktree worktree-rm worktree-sync worktree-list backend-status backend-stop-large turbo-install turbo-enable turbo-disable turbo-status turbo-start-256 turbo-stop turbo-bench janitor-enable janitor-disable janitor-status janitor-show-ledger janitor-show-active-context janitor-reset upgrade-to-q8 TURBO_ENABLED CONTEXT_JANITOR_ENABLED TURBO_MODEL_LOCAL_DIR
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -100,6 +100,14 @@ status: ## Show running ports
 	    echo "$$port  $$name        DOWN"; \
 	  fi; \
 	done
+
+# ---------- backend lifecycle ----------
+
+backend-status: ## Show active backend, state, and pending requests
+	GET http://127.0.0.1:4000/backend/status | python3 -m json.tool
+
+backend-stop-large: ## Stop the current large (non-fast) backend safely
+	@python3 -c "import asyncio; from router.backend_lifecycle import lifecycle_manager; asyncio.run(lifecycle_manager.stop_backend(lifecycle_manager.active_backend))"
 
 dashboard: ## Open the cost/savings dashboard
 	@open http://127.0.0.1:4001
@@ -281,6 +289,30 @@ turboquant-experimental-ab: ## A/B same prompt against live Ollama vs experiment
 turboquant-experimental-nuke: ## Stop + remove the experimental worktree
 	@bash $(SCRIPTS)/turboquant-experimental.sh nuke
 
+# ---------- turbo backends ----------
+
+turbo-install: ## Download Qwen2.5-Coder-32B-Instruct-4bit for turbo tiers (~20 GB MLX)
+	@bash $(SCRIPTS)/turbo-install.sh
+
+turbo-enable: ## Enable turbo backend escalation (set TURBO_ENABLED=1 in detected.env)
+	@sed -i '' 's/^TURBO_ENABLED=.*/TURBO_ENABLED=1/' config/detected.env || echo 'TURBO_ENABLED=1' >> config/detected.env
+
+turbo-disable: ## Disable turbo backend escalation (set TURBO_ENABLED=0 in detected.env)
+	@sed -i '' 's/^TURBO_ENABLED=.*/TURBO_ENABLED=0/' config/detected.env || echo 'TURBO_ENABLED=0' >> config/detected.env
+
+turbo-status: ## Check turbo backend readiness (model downloaded? mlx-lm turbo_kv_bits available?)
+	@bash $(SCRIPTS)/turbo-status.sh
+
+turbo-start-256: ## Manually start the 256k turbo backend (lifecycle manager handles this automatically)
+	@launchctl bootstrap gui/$$(id -u) $(LAUNCHD)/com.local.turbo-256k.plist
+
+turbo-stop: ## Stop all turbo backends
+	@launchctl bootout gui/$$(id -u) $(LAUNCHD)/com.local.turbo-256k.plist 2>/dev/null || true
+	@launchctl bootout gui/$$(id -u) $(LAUNCHD)/com.local.turbo-512k.plist 2>/dev/null || true
+
+turbo-bench: ## Benchmark turbo backends vs 128k (requires TURBO_ENABLED=1)
+	@python3 bench/runner.py --backends local-long-128k,local-turbo-256k,local-turbo-512k
+
 # ---------- perf suite ----------
 
 perf: ## End-to-end perf pass: cold + 500/5k/18k tok runs + router boundary
@@ -297,3 +329,28 @@ perf-prefix: ## Cursor-style prefix cache probe: 80k shared prefix + 4 follow-up
 
 perf-prefix-cold: ## Same probe but bounce Ollama first (true cold turn 1)
 	@bash $(SCRIPTS)/perf-prefix-cache.sh --evict
+
+# ---------- context janitor ----------
+
+janitor-enable: ## Enable context janitor (sets CONTEXT_JANITOR_ENABLED=1)
+	@sed -i '' 's/^CONTEXT_JANITOR_ENABLED=.*/CONTEXT_JANITOR_ENABLED=1/' config/detected.env || echo 'CONTEXT_JANITOR_ENABLED=1' >> config/detected.env
+
+janitor-disable: ## Disable context janitor
+	@sed -i '' 's/^CONTEXT_JANITOR_ENABLED=.*/CONTEXT_JANITOR_ENABLED=0/' config/detected.env || echo 'CONTEXT_JANITOR_ENABLED=0' >> config/detected.env
+
+janitor-status: ## Show context janitor state (enabled, last run, token stats)
+	@python3 -c "import json,pathlib; p=pathlib.Path('.runtime/context_janitor/status.json'); print(json.dumps(json.loads(p.read_text()),indent=2) if p.exists() else 'janitor has not run yet')"
+
+janitor-show-ledger: ## Print the project ledger
+	@cat .runtime/context_janitor/project-ledger.json 2>/dev/null | python3 -m json.tool || echo 'no ledger yet'
+
+janitor-show-active-context: ## Print the active context pack
+	@cat .runtime/context_janitor/active-context-pack.md 2>/dev/null || echo 'no active context pack yet'
+
+janitor-reset: ## Clear all janitor state (ledger, active context pack, manifests)
+	@rm -rf .runtime/context_janitor && echo 'janitor state cleared'
+
+# ---------- q8 upgrade ----------
+
+upgrade-to-q8: ## Upgrade local Ollama backend from q4 to q8_0 (requires 128 GB+; ~85 GB download)
+	@bash $(SCRIPTS)/upgrade-to-q8.sh

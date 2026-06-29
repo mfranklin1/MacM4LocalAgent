@@ -18,6 +18,16 @@ import sys
 import time
 from typing import Any
 
+# httpx is bundled in the dashboard venv; fall back to urllib so the
+# module can be imported in a plain stdlib environment (e.g. tests).
+try:
+    import httpx as _httpx
+    _HAS_HTTPX = True
+except ImportError:
+    _HAS_HTTPX = False
+    import urllib.request as _urllib_request
+    import urllib.error as _urllib_error
+
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -98,6 +108,67 @@ def _load_active() -> list[dict[str, Any]]:
     # Newest first matches the recent-requests table.
     out.sort(key=lambda r: r.get("started", 0), reverse=True)
     return out
+
+
+_BACKEND_STATUS_DEFAULT: dict[str, Any] = {
+    "active_backend": "unknown",
+    "state": "UNKNOWN",
+    "pending_requests": 0,
+    "memory_pressure": "unknown",
+    "last_switch_duration_ms": None,
+    "turbo_enabled": False,
+    "context_compression_enabled": False,
+}
+
+
+def _load_backend_status() -> dict[str, Any]:
+    """GET http://127.0.0.1:4000/backend/status and return its JSON.
+
+    Returns a safe default dict on any failure (connection refused,
+    timeout, unexpected response shape) so the dashboard card is always
+    renderable even when the proxy is not running.
+
+    The 300 ms timeout is deliberate: the dashboard poll loop runs
+    every 5 seconds; a slow proxy must not stall the render cycle.
+    """
+    url = "http://127.0.0.1:4000/backend/status"
+    try:
+        if _HAS_HTTPX:
+            resp = _httpx.get(url, timeout=0.3)
+            if resp.status_code != 200:
+                return dict(_BACKEND_STATUS_DEFAULT)
+            data = resp.json()
+        else:
+            req = _urllib_request.Request(url)
+            with _urllib_request.urlopen(req, timeout=0.3) as r:
+                if r.status != 200:
+                    return dict(_BACKEND_STATUS_DEFAULT)
+                data = json.loads(r.read().decode())
+    except Exception:
+        return dict(_BACKEND_STATUS_DEFAULT)
+
+    if not isinstance(data, dict):
+        return dict(_BACKEND_STATUS_DEFAULT)
+
+    # Merge into defaults so the template never sees a missing key.
+    merged = dict(_BACKEND_STATUS_DEFAULT)
+    merged.update(data)
+    return merged
+
+
+@app.get("/backend-status-card", response_class=HTMLResponse)
+def backend_status_card(request: Request) -> Any:
+    """HTMX-polled fragment that renders the backend state card.
+
+    Polled every 5 seconds by the placeholder div in index.html via
+    ``hx-trigger="load, every 5s"``.  Returns a self-contained HTML
+    partial — no page chrome, no layout wrapper.
+    """
+    status = _load_backend_status()
+    return templates.TemplateResponse(
+        request, "backend_status_card.html",
+        {"status": status},
+    )
 
 
 @app.get("/", response_class=HTMLResponse)

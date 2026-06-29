@@ -40,12 +40,17 @@ RENDERED="$REPO_ROOT/config/litellm-config.rendered.yaml"
 : "${MLX_REPO:?MLX_REPO missing from detected.env; rerun make detect}"
 : "${MLX_LOCAL_DIR:?MLX_LOCAL_DIR missing from detected.env; rerun make mlx}"
 : "${LOCAL_LONG_CTX:?LOCAL_LONG_CTX missing from detected.env; rerun make detect}"
+# TURBO_MODEL_LOCAL_DIR is optional — only needed when TURBO_ENABLED=1.
+# Default to a sensible path under the repo's models/ directory so the
+# rendered config is syntactically valid even before the turbo model is downloaded.
+TURBO_MODEL_LOCAL_DIR="${TURBO_MODEL_LOCAL_DIR:-$HOME/Documents/GitHub/MacM4LocalAgent/models/mlx-community_Qwen2.5-Coder-32B-Instruct-4bit}"
 sed -e "s|@@OLLAMA_TAG@@|$OLLAMA_TAG|g" \
     -e "s|@@MLX_REPO@@|$MLX_REPO|g" \
     -e "s|@@MLX_LOCAL_DIR@@|$MLX_LOCAL_DIR|g" \
     -e "s|@@LOCAL_LONG_CTX@@|$LOCAL_LONG_CTX|g" \
     -e "s|@@MLX_PORT@@|$MLX_PORT|g" \
     -e "s|@@OLLAMA_PORT@@|$OLLAMA_PORT|g" \
+    -e "s|@@TURBO_MODEL_LOCAL_DIR@@|${TURBO_MODEL_LOCAL_DIR}|g" \
     "$TEMPLATE" > "$RENDERED"
 log "rendered config: $RENDERED"
 

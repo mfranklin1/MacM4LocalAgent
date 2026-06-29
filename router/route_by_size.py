@@ -126,6 +126,16 @@ ENABLE_THINK_INJECTION = _control_flag("ROUTER_THINK_INJECTION", "1")
 # roughly doubles per-turn latency.
 ENABLE_THINKING_MODE = _control_flag("ROUTER_THINKING", "1")
 
+# Turbo escalation: when TURBO_ENABLED=1, context-saturated requests are
+# first compressed (via router.context_compression) and, if the compressed
+# token count fits a local turbo backend (router.backend_registry), routed
+# there instead of escalating to claude-code. Set TURBO_ENABLED=0 (or omit
+# from detected.env) to restore the original behaviour exactly.
+#
+# TODO: add "local-turbo-256k" and "local-turbo-512k" aliases to
+#       config/litellm-config.yaml before enabling this in production.
+TURBO_ENABLED = _control_flag("TURBO_ENABLED", "0")
+
 
 def _thinking_effort() -> str:
     """Claude adaptive-thinking effort level (env override).
@@ -836,6 +846,53 @@ def _mark_sticky_turns(fingerprint: str, reason: str, turns: int) -> None:
     _sticky_escalations[fingerprint] = (time.time(), reason, max(1, turns))
 
 
+def _try_turbo_escalation(
+    token_count: int,
+    fingerprint: str,
+    reason: str,
+) -> tuple[str, str] | None:
+    """Attempt to route a context-saturated request to a local turbo backend
+    instead of claude-code.
+
+    Algorithm:
+      1. Call context_compression.compress() on the current messages to obtain
+         a compressed token estimate.
+      2. Ask backend_registry.pick_turbo_backend(compressed_tokens) for a
+         suitable turbo model ("local-turbo-256k" or "local-turbo-512k").
+      3. If a backend is available, return (model, updated_reason).
+         Otherwise return None so the caller falls through to claude-code.
+
+    Only called when TURBO_ENABLED=1. Any import or runtime error is caught
+    and logged; the function returns None so the original escalation path
+    is preserved.
+
+    The `token_count` argument is the FULL (pre-compression) request size.
+    `fingerprint` is the task fingerprint used for sticky tracking.
+    `reason` is the saturation reason string built by the caller; we annotate
+    it with the compression outcome before returning.
+    """
+    try:
+        from router.context_compression import compress  # noqa: PLC0415
+        from router.backend_registry import pick_turbo_backend  # noqa: PLC0415
+
+        compressed_tokens = compress(token_count)
+        model = pick_turbo_backend(compressed_tokens)
+        if model is None:
+            return None
+        turbo_reason = (
+            f"{reason}; turbo: compressed {token_count}->{compressed_tokens} tok, "
+            f"routed to {model}"
+        )
+        return (model, turbo_reason)
+    except Exception as exc:  # pragma: no cover -- guard against missing modules
+        print(
+            f"[router] _try_turbo_escalation failed ({type(exc).__name__}: {exc}); "
+            "falling back to claude-code",
+            file=sys.stderr,
+        )
+        return None
+
+
 def decide_tier_cline(
     messages: Iterable[dict[str, Any]] | None,
 ) -> tuple[str, str, int]:
@@ -954,6 +1011,22 @@ def decide_tier_cline(
             f"saturation: {full_request_tokens} > {saturation_limit} "
             f"({int(saturation_fraction * 100)}% of {ROUTE_LONG_MAX})"
         )
+        # Lifecycle-aware escalation: when TURBO_ENABLED=1, attempt context
+        # compression and route to a local turbo backend BEFORE paying Claude
+        # pricing. The sticky entry uses the original sat_reason so a
+        # subsequent turn that also saturates gets the same treatment without
+        # re-running compression. When turbo is disabled or unavailable the
+        # block is a no-op and the original claude-code path is taken.
+        if TURBO_ENABLED:
+            turbo = _try_turbo_escalation(full_request_tokens, fingerprint, sat_reason)
+            if turbo is not None:
+                turbo_model, turbo_reason = turbo
+                _mark_sticky(fingerprint, sat_reason)
+                return (
+                    turbo_model,
+                    f"cline+saturation({fingerprint}): {turbo_reason}",
+                    task_tokens,
+                )
         _mark_sticky(fingerprint, sat_reason)
         return (
             "claude-code",
