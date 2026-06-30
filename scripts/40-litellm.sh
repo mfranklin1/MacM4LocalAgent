@@ -19,7 +19,7 @@ source "$VENV/bin/activate"
 log "installing litellm[proxy] + deps"
 uv pip install --upgrade pip >/dev/null
 uv pip install --upgrade \
-  "litellm[proxy]>=1.50" \
+  "litellm[proxy]>=1.89,<1.90" \
   "anthropic>=0.40" \
   "tiktoken>=0.7" \
   "fastapi>=0.110" \
