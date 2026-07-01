@@ -9,7 +9,6 @@
   --warn: #f5a623;
   --bad: #ff6b6b;
   --tier-claude: #ffb86b;
-  --tier-local-fast: #6cf;
   --tier-local-long: #b48cff;
 }
 * { box-sizing: border-box; }
@@ -65,7 +64,6 @@ pre.output { max-height: 600px; }
   background: #232b3a; color: var(--fg);
 }
 .tier-claude     { background: rgba(255, 184, 107, 0.18); color: var(--tier-claude); }
-.tier-local-fast { background: rgba(102, 204, 255, 0.18); color: var(--tier-local-fast); }
 .tier-local-long { background: rgba(180, 140, 255, 0.18); color: var(--tier-local-long); }
 
 table {

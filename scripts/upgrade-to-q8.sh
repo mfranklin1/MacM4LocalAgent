@@ -7,7 +7,7 @@
 # What this does:
 #   1. Verifies RAM_GB >= 96 (q8_0 requires ~80 GB VRAM for Qwen3-Coder-Next).
 #   2. Pulls qwen3-coder-next:q8_0 from Ollama registry.
-#   3. Rewrites QUANT_TIER, OLLAMA_TAG, and MLX_QUANT in config/detected.env.
+#   3. Rewrites QUANT_TIER and OLLAMA_TAG in config/detected.env.
 #   4. Re-renders launchd plists via scripts/60-dashboard.sh.
 #   5. Bounces the Ollama daemon to pick up the new model.
 #
@@ -60,7 +60,6 @@ ok "Pull complete."
 log "Rewriting config/detected.env …"
 sed -i.bak \
   -e 's|^QUANT_TIER=.*|QUANT_TIER="q8"|' \
-  -e 's|^MLX_QUANT=.*|MLX_QUANT="8bit"|' \
   -e "s|^OLLAMA_TAG=.*|OLLAMA_TAG=\"${TARGET_TAG}\"|" \
   "$DETECTED_ENV"
 rm -f "${DETECTED_ENV}.bak"

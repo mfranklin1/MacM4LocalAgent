@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # perf-suite.sh - Reproducible end-to-end perf pass against the live stack.
-# Times cold-load + 3 warm runs across MLX (local-fast), Ollama (local-long
-# at mid + long context), and exercises the hybrid-auto router at the
-# size boundary. Reports prompt size, decode tok/sec, total latency.
+# Times cold-load + 3 warm runs across Ollama (local-long at mid + long
+# context), and exercises the hybrid-auto router at the size boundary.
+# Reports prompt size, decode tok/sec, total latency.
 #
 # Usage:
 #   bash scripts/perf-suite.sh            # full suite (cold + 500 + 5k + 18k + router)
@@ -66,9 +66,8 @@ one_call() {
 import json, sys
 resp = json.loads(sys.argv[1] or "{}")
 asked = sys.argv[2]
-fast_max = int(sys.argv[3])
-long_max = int(sys.argv[4])
-router_est = int(sys.argv[5])  # what the router would have seen
+long_max = int(sys.argv[3])
+router_est = int(sys.argv[4])  # what the router would have seen
 u = resp.get("usage", {}) or {}
 pt = int(u.get("prompt_tokens", 0) or 0)
 ct = int(u.get("completion_tokens", 0) or 0)
@@ -76,19 +75,15 @@ if asked == "claude-code":
     tier = "claude"
 elif asked == "local-long":
     tier = "local-long"
-elif asked == "local-fast":
-    tier = "local-fast"
 elif asked == "hybrid-auto":
     # Mirror router/route_by_size.py decide_tier() exactly. We use the
     # router-side estimate (chars/3.6 of the *outgoing* prompt) because
     # that is what the router itself sees - not the upstream tokenizer.
-    if router_est > long_max:    tier = "claude-routed"
-    elif router_est > fast_max:  tier = "local-long-routed"
-    else:                        tier = "local-fast-routed"
+    tier = "claude-routed" if router_est > long_max else "local-long-routed"
 else:
     tier = "unknown:" + asked
 print(pt, ct, tier)
-' "$resp" "$model" "${ROUTE_FAST_MAX:-16000}" "${ROUTE_LONG_MAX:-128000}" "$router_est_tok")
+' "$resp" "$model" "${ROUTE_LONG_MAX:-128000}" "$router_est_tok")
   read -r prompt_tok completion_tok tier_used <<<"$parsed"
   local toks_per_s
   if [[ "${completion_tok:-0}" -gt 0 && "$(python3 -c "print($elapsed > 0)")" == "True" ]]; then
@@ -128,24 +123,20 @@ print(json.dumps({
 hdr "Pre-flight"
 echo "  litellm:  http://127.0.0.1:${LITELLM_PORT}"
 echo "  ollama:   http://127.0.0.1:${OLLAMA_PORT}  (KV cache: ${KV_CACHE_TYPE})"
-echo "  mlx:      http://127.0.0.1:${MLX_PORT}     (model: ${MLX_REPO})"
 echo "  ollama tag: ${OLLAMA_TAG}"
 PID_OLL=$(lsof -nP -iTCP:${OLLAMA_PORT} -sTCP:LISTEN -t 2>/dev/null | head -1 || true)
-PID_MLX=$(lsof -nP -iTCP:${MLX_PORT}   -sTCP:LISTEN -t 2>/dev/null | head -1 || true)
 echo "  ollama pid: ${PID_OLL:-down}    started: $(ps -p ${PID_OLL:-0} -o lstart= 2>/dev/null | xargs)"
-echo "  mlx    pid: ${PID_MLX:-down}    started: $(ps -p ${PID_MLX:-0} -o lstart= 2>/dev/null | xargs)"
 
 # ----------------------------------------------------------------------
 hdr "Cold-load: first call after a quiet period"
 echo "(A cold call includes mmap + weight load. Subsequent calls reflect steady-state.)"
 SHORT="Write a one-line Python function that returns x+1."
-run_n "MLX cold"           local-fast "$SHORT" 1
 run_n "Ollama cold"        local-long "$SHORT" 1
 
 # ----------------------------------------------------------------------
-hdr "MLX local-fast (~500 tok prompt, 3 warm runs)"
+hdr "Ollama local-long (~500 tok prompt, 3 warm runs)"
 P_SHORT="$(make_prompt 500 $'\nPlease write a Python function add_one(x) and a unit test.')"
-run_n "MLX warm" local-fast "$P_SHORT" 3
+run_n "Ollama warm" local-long "$P_SHORT" 3
 
 # ----------------------------------------------------------------------
 hdr "Ollama local-long (~5k tok prompt, 3 warm runs)"
@@ -161,7 +152,7 @@ fi
 
 # ----------------------------------------------------------------------
 hdr "Hybrid-auto router boundary check"
-echo "(hybrid-auto should pick local-fast for short, local-long for >16k, claude for >128k.)"
+echo "(hybrid-auto should pick local-long up to 128k, claude beyond that.)"
 run_n "hybrid small (~500 tok)"  hybrid-auto "$P_SHORT" 1
 run_n "hybrid mid (~5k tok)"     hybrid-auto "$P_MID"   1
 if [[ "$MODE" != "--short" ]]; then
@@ -184,8 +175,8 @@ if [[ "$MODE" == "--stress" ]]; then
   hdr "STRESS: hybrid-auto at >128k ceiling (~${OVER_CEILING_TOKENS:-140000} tok prompt) [must route to claude-code]"
   echo "  This prompt exceeds ROUTE_LONG_MAX=${ROUTE_LONG_MAX}, so the size-based"
   echo "  router MUST rewrite hybrid-auto -> claude-code. Tier in the result"
-  echo "  line below should read 'claude'. If it reads 'local-long' or"
-  echo "  'local-fast', routing is broken."
+  echo "  line below should read 'claude'. If it reads 'local-long',"
+  echo "  routing is broken."
   if [[ -z "${ANTHROPIC_API_KEY:-}" ]] && ! launchctl getenv ANTHROPIC_API_KEY >/dev/null 2>&1; then
     echo "  WARN: ANTHROPIC_API_KEY not visible to this shell or launchd."
     echo "        The router will still pick claude-code, but the upstream call will 401."
@@ -227,11 +218,4 @@ if [[ -n "${PID_OLL_NOW:-}" ]]; then
   RSS_GB=$(python3 -c "print(round(${RSS_KB:-0}/1024/1024,1))")
   echo "  ollama tree RSS:   ${RSS_GB} GB   (parent + runner child = model + KV cache + runtime)"
 fi
-PID_MLX_NOW=$(lsof -nP -iTCP:${MLX_PORT} -sTCP:LISTEN -t 2>/dev/null | head -1 || true)
-if [[ -n "${PID_MLX_NOW:-}" ]]; then
-  RSS_KB=$(sum_tree_rss_kb "$PID_MLX_NOW")
-  RSS_GB=$(python3 -c "print(round(${RSS_KB:-0}/1024/1024,1))")
-  echo "  mlx    tree RSS:   ${RSS_GB} GB"
-fi
-
 hdr "Done"

@@ -428,28 +428,9 @@ def compare_one(request: Request, cmp_id: int) -> Any:
 # every call so we don't bother caching.
 
 # Pinned tier metadata. Values match config/litellm-config.yaml and
-# the Ollama / MLX backend Modelfiles. Update both in lockstep if
-# either side changes.
+# the Ollama backend Modelfiles. Update both in lockstep if either
+# side changes.
 _MACM4_TIERS = [
-    {
-        "id": "local-fast",
-        "tier": "local",
-        "backend": "mlx",
-        "backend_url": "http://127.0.0.1:8081",
-        "model_repo_env": "MLX_REPO",
-        "context_window": 16384,
-        "max_output_tokens": 6144,
-        "tokens_per_second_est": 70,
-        "pricing": {
-            "input_per_million_usd": 0.0,
-            "output_per_million_usd": 0.0,
-        },
-        "capabilities": {
-            "streaming": True,
-            "tool_use_native": False,
-            "vision": False,
-        },
-    },
     {
         "id": "local-long",
         "tier": "local",
@@ -618,18 +599,10 @@ def _macm4_models_payload() -> dict[str, Any]:
     models: list[dict[str, Any]] = []
     for tier in _MACM4_TIERS:
         entry = dict(tier)
-        # Add a "warm" flag for local tiers based on Ollama /api/ps
-        # output. MLX doesn't have a comparable endpoint so we trust
-        # the launchd plist (KeepAlive=true) and report warm=true
-        # unconditionally for local-fast.
+        # Add a "warm" flag for local tiers based on Ollama /api/ps output.
         if tier["tier"] == "local":
             if tier["backend"] == "ollama":
                 entry["warm"] = bool(expected_ollama) and expected_ollama in loaded_ollama
-            elif tier["backend"] == "mlx":
-                # The MLX server stays warm for the process lifetime
-                # of the launchd-managed binary. Best-effort port
-                # check would add latency for little gain.
-                entry["warm"] = True
             else:
                 entry["warm"] = False
         models.append(entry)

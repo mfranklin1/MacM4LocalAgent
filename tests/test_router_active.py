@@ -100,8 +100,7 @@ def test_register_active_picks_correct_tier_per_model(tmp_active: pathlib.Path) 
         ("anthropic/claude-opus-4-7",                       "claude"),
         ("ollama/qwen3-coder-next:q4_K_M",                   "local-long"),
         ("local-long",                                       "local-long"),
-        ("local-fast",                                       "local-fast"),
-        ("openai/mlx-community/Qwen2.5-Coder-7B-Instruct",   "local-fast"),
+        ("local-agent",                                       "local-long"),
     ]
     for i, (model, _expected) in enumerate(cases):
         router._register_active(_make_pre_call_data(call_id=f"cid-{i}", model=model))

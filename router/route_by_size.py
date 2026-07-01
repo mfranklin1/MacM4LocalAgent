@@ -5,13 +5,12 @@ Wired in as both `callbacks` (for pre-call routing) and `success_callback`
 (for post-call cost ingestion) in config/litellm-config.yaml.
 
 Routing rules (thresholds come from config/detected.env):
-  - <ROUTE_FAST_MAX tokens, not complex   -> local-fast (MLX)
-  - ROUTE_FAST_MAX..ROUTE_LONG_MAX tokens -> local-long (Ollama)
+  - <=ROUTE_LONG_MAX tokens, not complex  -> local-long (Ollama)
   - >ROUTE_LONG_MAX tokens OR complex     -> claude-code
 
-If the user explicitly picks a real model name (local-fast, local-long, or
-claude-code) we never override. We only intercept the magical `hybrid-auto`
-alias defined in litellm-config.yaml.
+If the user explicitly picks a real model name (local-long or claude-code)
+we never override. We only intercept the magical `hybrid-auto` alias
+defined in litellm-config.yaml.
 """
 
 from __future__ import annotations
@@ -90,7 +89,6 @@ def _read_env_file(path: pathlib.Path) -> dict[str, str]:
 
 
 _ENV = _read_env_file(REPO_ROOT / "config" / "detected.env")
-ROUTE_FAST_MAX = int(_ENV.get("ROUTE_FAST_MAX", "16000"))
 ROUTE_LONG_MAX = int(_ENV.get("ROUTE_LONG_MAX", "128000"))
 
 
@@ -238,7 +236,7 @@ def _is_local_model_name(model: str | None) -> bool:
     if not isinstance(model, str):
         return False
     canonical = model[len("gpt-"):] if model.startswith("gpt-") else model
-    return canonical in ("local-fast", "local-long", "local-agent") or canonical.startswith("local-coder-")
+    return canonical in ("local-long", "local-agent") or canonical.startswith("local-coder-")
 
 # When OVERGEN_TRACE=1, append a one-line summary to .logs/overgen-trace.log
 # every time a control fires. Used to verify Cursor traffic is being
@@ -395,24 +393,21 @@ def _heuristic_tokens_from_chars(total_chars: int) -> int:
 # rather than tokens so we don't have to tokenize first.
 #
 # `_TIER_BOUNDARY_BAND_FRACTION = 0.2` means: if the heuristic
-# estimate is within 20% of either ROUTE_FAST_MAX or ROUTE_LONG_MAX
-# we re-tokenize with tiktoken to make a more accurate routing call.
-# Outside the band, we trust the heuristic.
+# estimate is within 20% of ROUTE_LONG_MAX we re-tokenize with tiktoken
+# to make a more accurate routing call. Outside the band, we trust the
+# heuristic.
 _TIER_BOUNDARY_BAND_FRACTION = float(
     os.environ.get("ROUTER_BOUNDARY_BAND", "0.2")
 )
 
 
 def _near_tier_boundary(heuristic_tokens: int) -> bool:
-    """True if the heuristic estimate is close enough to a tier
+    """True if the heuristic estimate is close enough to the tier
     boundary that estimator error could flip the routing decision."""
-    for boundary in (ROUTE_FAST_MAX, ROUTE_LONG_MAX):
-        if boundary <= 0:
-            continue
-        band = boundary * _TIER_BOUNDARY_BAND_FRACTION
-        if abs(heuristic_tokens - boundary) <= band:
-            return True
-    return False
+    if ROUTE_LONG_MAX <= 0:
+        return False
+    band = ROUTE_LONG_MAX * _TIER_BOUNDARY_BAND_FRACTION
+    return abs(heuristic_tokens - ROUTE_LONG_MAX) <= band
 
 
 def _collect_text(messages: Iterable[dict[str, Any]] | None) -> tuple[int, str]:
@@ -515,23 +510,19 @@ def decide_tier(messages: Iterable[dict[str, Any]] | None) -> tuple[str, str, in
                 tokens,
             )
         return ("claude-code", f"tokens {tokens} > {ROUTE_LONG_MAX}", tokens)
-    if tokens > ROUTE_FAST_MAX:
-        return ("local-long", f"tokens {tokens} in [{ROUTE_FAST_MAX},{ROUTE_LONG_MAX}]", tokens)
-    return ("local-fast", f"tokens {tokens} <= {ROUTE_FAST_MAX}", tokens)
+    return ("local-long", f"tokens {tokens} <= {ROUTE_LONG_MAX}", tokens)
 
 
 # ----- Cline-aware routing --------------------------------------------------
 #
 # Why this exists:
 # Cline ships a ~13.5K-token system prompt encoding its tool catalogue as
-# XML. That alone clears `ROUTE_FAST_MAX` (16K), so the size-based
-# `decide_tier()` would always pick `local-long` (or claude-code for
-# >128K) regardless of how trivial the user's actual task is. Worse,
+# XML, which drowns out the actual complexity of the user's task if the
+# size-based `decide_tier()` classifier scans the whole raw prompt. Worse,
 # the complexity classifier scans the FLAT prompt, and Cline's
 # system prompt happens to contain phrases like "[local development]"
-# that match our `[local]` opt-out tag -- so today's behaviour is
-# "Cline always routes to local-fast because the harness accidentally
-# matches the local-tag regex" -- exactly wrong.
+# that match our `[local]` opt-out tag -- so naive size-based routing
+# would misclassify nearly every Cline turn.
 #
 # The Cline-aware path:
 #   1. Detects Cline traffic via the existing fingerprint
@@ -541,8 +532,7 @@ def decide_tier(messages: Iterable[dict[str, Any]] | None) -> tuple[str, str, in
 #      around the user's prompt.
 #   3. Classifies on the extracted task ONLY -- the harness can't
 #      drown the signal.
-#   4. Defaults to `local-long` (NEVER `local-fast` -- structurally
-#      unreachable from Cline because of harness size).
+#   4. Defaults to `local-long`.
 #   5. Escalates to `claude-code` on:
 #        a. Explicit `[claude]` tag in the task.
 #        b. Architecture / multi-file / deep-reasoning keywords.
@@ -1070,8 +1060,7 @@ def decide_tier_cline(
                 task_tokens,
             )
 
-    # Default: local-long. Cline's harness alone is too big for
-    # local-fast, so we never pick that for Cline traffic.
+    # Default: local-long.
     return ("local-long", f"cline+default: task={task_tokens} tok", task_tokens)
 
 
@@ -1094,29 +1083,14 @@ ACTIVE_TTL_SEC = 600
 
 
 def _model_to_tier(model: str) -> str:
-    """Classify a (possibly upstream-shaped) model id into one of
-    `claude` / `local-long` / `local-fast`. Pulled out of `_record` so
-    the pre-call registration can use the same logic without rewriting
-    it. Mirrors the rules documented in `_record` -- if you change one,
-    change both."""
+    """Classify a (possibly upstream-shaped) model id into `claude` or
+    `local-long`. Pulled out of `_record` so the pre-call registration
+    can use the same logic without rewriting it. Mirrors the rules
+    documented in `_record` -- if you change one, change both."""
     m_lower = model.lower()
     if "claude" in m_lower or "anthropic" in m_lower:
         return "claude"
-    if (
-        model.startswith("ollama/")
-        or model == "local-long"
-        or ("qwen3-coder-next" in m_lower and "mlx" not in m_lower)
-        or m_lower.endswith((":q4_k_m", ":q8_0", ":q4_0"))
-    ):
-        return "local-long"
-    if (
-        model == "local-fast"
-        or model.startswith(("openai/", "mlx-"))
-        or "mlx-community" in m_lower
-        or ("/" in model and "mlx" in m_lower)
-    ):
-        return "local-fast"
-    return "local-fast"
+    return "local-long"
 
 
 # ----- LiteLLM callback shim ------------------------------------------------
@@ -1168,7 +1142,6 @@ class SizeBasedRouter(_LiteLLMCustomLogger):
             # identically regardless of which alias the client used.
             if requested.startswith("gpt-") and requested[len("gpt-"):] in (
                 "hybrid-auto",
-                "local-fast",
                 "local-long",
                 "local-agent",
                 "claude-code",
@@ -1469,15 +1442,15 @@ class SizeBasedRouter(_LiteLLMCustomLogger):
         in_tok = int(usage.get("prompt_tokens", 0) or 0)
         out_tok = int(usage.get("completion_tokens", 0) or 0)
 
-        # Determine "tier": claude vs local-fast vs local-long. The `model`
-        # string LiteLLM hands us depends on where in the lifecycle we are:
+        # Determine "tier": claude vs local-long. The `model` string
+        # LiteLLM hands us depends on where in the lifecycle we are:
         #   - From async_pre_call_hook we already rewrote `data["model"]`
-        #     to the alias (local-fast / local-long / claude-code), and
-        #     LiteLLM sometimes echoes that back as `model` to the callback.
+        #     to the alias (local-long / claude-code), and LiteLLM
+        #     sometimes echoes that back as `model` to the callback.
         #   - For direct alias calls (no hybrid-auto) the model can be the
         #     alias itself.
         #   - In other paths LiteLLM passes the upstream id (ollama/...,
-        #     openai/mlx-community/..., anthropic/claude-...).
+        #     anthropic/claude-...).
         # The shared `_model_to_tier` helper handles all of these and is
         # also used by the in-flight registration path.
         tier = _model_to_tier(model)

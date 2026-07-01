@@ -38,18 +38,18 @@ def _resp(content: str, in_tok: int = 1, out_tok: int = 1) -> httpx.Response:
 def test_full_flow(tmp_db, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     router = SizeBasedRouter()
 
-    # ---- 1) hybrid-auto rewrite for a small prompt -> local-fast
+    # ---- 1) hybrid-auto rewrite for a small prompt -> local-long
     data: dict = {
         "model": "hybrid-auto",
         "messages": [{"role": "user", "content": "tiny ask"}],
     }
     out = asyncio.run(router.async_pre_call_hook(None, None, data, "completion"))
-    assert out["model"] == "local-fast"
+    assert out["model"] == "local-long"
 
     # ---- 2) record three different-tier requests
     now = int(time.time())
     router.log_success_event(
-        kwargs={"model": "mlx-community/Qwen3-Coder-Next-4bit", "metadata": {"route_reason": "<= 16k"}},
+        kwargs={"model": "local-agent", "metadata": {"route_reason": "<= 128k"}},
         response_obj={"usage": {"prompt_tokens": 1500, "completion_tokens": 600}},
         start_time=time.time(),
         end_time=time.time() + 0.2,
@@ -70,7 +70,7 @@ def test_full_flow(tmp_db, client: TestClient, monkeypatch: pytest.MonkeyPatch) 
     # ---- 3) savings rolls up correctly
     s = savings.summarize(7)
     assert s["total_requests"] == 3
-    assert {"local-fast", "local-long", "claude"}.issubset(s["by_tier"].keys())
+    assert {"local-long", "claude"}.issubset(s["by_tier"].keys())
     # Claude actual = 5000*3e-6 + 2000*15e-6 = 0.015 + 0.030 = 0.045
     assert s["actual_spend_usd"] == pytest.approx(0.045, rel=1e-6)
     assert s["savings_usd"] > 0
@@ -84,7 +84,7 @@ def test_full_flow(tmp_db, client: TestClient, monkeypatch: pytest.MonkeyPatch) 
     page = client.get("/stats").text
     assert "claude-sonnet-4-6" in page
     assert "ollama/qwen3-coder:30b" in page
-    assert "mlx-community/Qwen3-Coder-Next-4bit" in page
+    assert "local-agent" in page
 
     # ---- 6) A/B comparator persists and the dashboard surfaces it
     def handler(req: httpx.Request) -> httpx.Response:

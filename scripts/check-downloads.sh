@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# check-downloads.sh - Print whether the Ollama and MLX background downloads
-# are still running, and whether the model files are fully on disk.
+# check-downloads.sh - Print whether the Ollama background download is
+# still running, and whether the model files are fully on disk.
 #
-# Exit code 0  = both done
-# Exit code 1  = at least one still in progress
-# Exit code 2  = at least one failed (proc gone but files missing)
+# Exit code 0  = done
+# Exit code 1  = still in progress
+# Exit code 2  = failed (proc gone but files missing)
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -191,76 +191,6 @@ fi
 echo "$now_epoch $ollama_combined_bytes" >> "$state_file"
 tail -50 "$state_file" > "$state_file.tmp" && mv "$state_file.tmp" "$state_file"
 
-# ---------- MLX -------------------------------------------------------------
-mlx_done=0
-mlx_running=0
-mlx_dir=""
-mlx_safetensors=0
-
-# Pick the model dir that's currently being written to by the MLX path
-# (snapshot_download against an mlx-community repo), preferring the one with
-# active .incomplete chunks. The HF-driven Ollama import path also writes
-# under models/, so we MUST exclude that target here:
-#  * if the wrapper is currently running, $hf_target points at it
-#  * if the wrapper has finished, the dir still exists and contains a *.gguf
-#    file but no MLX safetensors. We exclude any directory whose name does
-#    NOT begin with "mlx-" so the two downloads can't shadow each other in
-#    either state.
-is_mlx_candidate() {
-  local cand="$1"
-  local name="${cand##*/}"
-  [[ "$name" == mlx-* || "$name" == *_mlx_* || "$name" == *-mlx-* ]]
-}
-if [[ -d "$REPO_ROOT/models" ]]; then
-  active=""
-  for d in "$REPO_ROOT/models"/*/; do
-    [[ -d "$d" ]] || continue
-    cand="${d%/}"
-    [[ -n "$hf_target" && "$cand" == "$hf_target" ]] && continue
-    is_mlx_candidate "$cand" || continue
-    if compgen -G "$d/.cache/huggingface/download/*.incomplete" >/dev/null \
-       || compgen -G "$d/.cache/huggingface/download/*.lock" >/dev/null; then
-      active="$cand"
-      break
-    fi
-  done
-  if [[ -n "$active" ]]; then
-    mlx_dir="$active"
-  else
-    # Largest finished MLX-style tree.
-    mlx_dir=$(
-      for d in "$REPO_ROOT/models"/*/; do
-        cand="${d%/}"
-        [[ -n "$hf_target" && "$cand" == "$hf_target" ]] && continue
-        is_mlx_candidate "$cand" || continue
-        du -s "$cand" 2>/dev/null
-      done | sort -rn | awk 'NR==1 {print $2}'
-    )
-  fi
-fi
-
-if [[ -n "$mlx_dir" ]]; then
-  # A finished MLX repo has at least one *.safetensors file at the root and
-  # no *.lock or *.incomplete files in .cache/huggingface/download.
-  mlx_safetensors=$(find "$mlx_dir" -maxdepth 1 -name "*.safetensors" 2>/dev/null | wc -l | tr -d ' ')
-  mlx_pending=0
-  if [[ -d "$mlx_dir/.cache/huggingface/download" ]]; then
-    mlx_pending=$(find "$mlx_dir/.cache/huggingface/download" -maxdepth 1 \( -name "*.lock" -o -name "*.incomplete" \) 2>/dev/null | wc -l | tr -d ' ')
-  fi
-  if (( mlx_safetensors > 0 )) && (( mlx_pending == 0 )); then
-    mlx_done=1
-  fi
-fi
-
-if pgrep -f "snapshot_download" >/dev/null 2>&1; then
-  mlx_running=1
-fi
-
-mlx_disk=""
-if [[ -n "$mlx_dir" ]]; then
-  mlx_disk=$(du -sh "$mlx_dir" 2>/dev/null | awk '{print $1}')
-fi
-
 # ---------- Output ----------------------------------------------------------
 printf "\n%sBackground download status%s  (%s)\n" "${GREEN}" "${RESET}" "$(date '+%H:%M:%S')"
 printf "  %srepo:%s %s\n" "${DIM}" "${RESET}" "$REPO_ROOT"
@@ -305,31 +235,14 @@ else
   printf "             %sretry / resume: bash scripts/20-ollama.sh%s\n" "${DIM}" "${RESET}"
 fi
 
-# MLX
-if (( mlx_done == 1 )); then
-  printf "  MLX:       ${GREEN}DONE${RESET}    %s on disk   (%d safetensors in %s)\n" \
-    "${mlx_disk:-?}" "$mlx_safetensors" "${mlx_dir##*/}"
-elif (( mlx_running == 1 )); then
-  printf "  MLX:       ${YELLOW}RUNNING${RESET} %s on disk   (%d/?? safetensors materialized)\n" \
-    "${mlx_disk:-?}" "$mlx_safetensors"
-elif [[ -n "$mlx_dir" ]]; then
-  printf "  MLX:       ${RED}STOPPED${RESET} %s on disk   no snapshot_download process and download incomplete\n" \
-    "${mlx_disk:-?}"
-  printf "             %sretry: MLX_PREFER_NEXT=0 bash scripts/30-mlx.sh%s\n" "${DIM}" "${RESET}"
-else
-  printf "  MLX:       ${RED}MISSING${RESET} no models/ directory yet\n"
-  printf "             %sretry: bash scripts/30-mlx.sh%s\n" "${DIM}" "${RESET}"
-fi
-
 printf "\n"
 
 # ---------- Decide exit code + next-step nudge ------------------------------
-if (( ollama_done == 1 )) && (( mlx_done == 1 )); then
-  printf "  ${GREEN}Both downloads complete.${RESET} Run \`make finalize\` to start MLX and refresh services.\n\n"
+if (( ollama_done == 1 )); then
+  printf "  ${GREEN}Download complete.${RESET} Run \`make finalize\` to refresh services.\n\n"
   exit 0
 fi
 
 if (( ollama_running == 0 )) && (( ollama_done == 0 )); then exit 2; fi
-if (( mlx_running == 0 )) && (( mlx_done == 0 )); then exit 2; fi
 
 exit 1

@@ -28,8 +28,8 @@ ENV_FILE="$WORK/config/detected.env"
 
 if [[ -f "$ENV_FILE" ]]; then
   for key in CHIP RAM_GB GPU_CORES QUANT_TIER OLLAMA_TAG KV_CACHE_TYPE \
-             LOCAL_FAST_CTX LOCAL_LONG_CTX ROUTE_FAST_MAX ROUTE_LONG_MAX \
-             LITELLM_PORT MLX_PORT OLLAMA_PORT DASHBOARD_PORT; do
+             LOCAL_LONG_CTX ROUTE_LONG_MAX \
+             LITELLM_PORT OLLAMA_PORT DASHBOARD_PORT; do
     if grep -q "^$key=" "$ENV_FILE"; then ok "key $key present"; else fail "key $key missing"; fi
   done
 
@@ -43,7 +43,7 @@ if [[ -f "$ENV_FILE" ]]; then
     tq3|tq4|q4_0|q8_0|f16) ok "KV_CACHE_TYPE=$KV_CACHE_TYPE (supported)" ;;
     *)                     fail "KV_CACHE_TYPE='$KV_CACHE_TYPE' not a supported Ollama KV cache type" ;;
   esac
-  if (( ROUTE_FAST_MAX < ROUTE_LONG_MAX )); then ok "ROUTE_FAST_MAX < ROUTE_LONG_MAX"; else fail "thresholds inverted"; fi
+  if (( ROUTE_LONG_MAX == LOCAL_LONG_CTX )); then ok "ROUTE_LONG_MAX == LOCAL_LONG_CTX"; else fail "ROUTE_LONG_MAX must equal LOCAL_LONG_CTX"; fi
 fi
 
 echo "  pass=$PASS fail=$FAIL"

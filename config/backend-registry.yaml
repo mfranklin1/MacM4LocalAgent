@@ -6,14 +6,6 @@
 # Ports 8082/8083 are reserved: 8082 = turboquant-experimental-serve (llama.cpp A/B probe).
 
 backends:
-  local-fast:
-    kind: mlx
-    port_env: MLX_PORT          # resolved from detected.env at runtime
-    max_context: 16384
-    resident_policy: always_on
-    startup_timeout_seconds: 60
-    idle_timeout_seconds: 0     # never unload
-
   local-long-128k:
     kind: ollama
     model_env: OLLAMA_TAG       # resolved from detected.env
@@ -55,7 +47,6 @@ tier_order:
   # Ordered cheapest-to-most-expensive. The lifecycle manager escalates
   # through this list until it finds a tier whose max_context covers the
   # compressed token count.
-  - local-fast
   - local-long-128k
   - local-turbo-256k
   - local-turbo-512k

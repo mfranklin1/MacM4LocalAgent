@@ -31,7 +31,7 @@ def tmp_active(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> pathl
 
 
 def _seed(now: int) -> None:
-    ingest.record_request(model="local-fast",        tier="local-fast",  in_tok=1000, out_tok=500, actual_cost=0.0,    latency_ms=100, ts=now-100, route_reason="<= 16k")
+    ingest.record_request(model="local-agent",       tier="local-long",  in_tok=1000, out_tok=500, actual_cost=0.0,    latency_ms=100, ts=now-100, route_reason="<= 128k")
     ingest.record_request(model="ollama/qwen3-30b",  tier="local-long",  in_tok=2000, out_tok=800, actual_cost=0.0,    latency_ms=400, ts=now-200, route_reason="16k-128k")
     ingest.record_request(model="claude-sonnet-4-6", tier="claude",      in_tok=500,  out_tok=200, actual_cost=0.0045, latency_ms=900, ts=now-300, route_reason="complex")
 
@@ -50,7 +50,7 @@ def test_stats_fragment(client: TestClient) -> None:
     assert "Today"        in r.text
     assert "Last 7 days"  in r.text
     assert "claude"       in r.text
-    assert "local-fast"   in r.text
+    assert "local-long"   in r.text
     # request rows
     assert "ollama/qwen3-30b" in r.text
 
@@ -148,11 +148,11 @@ def _seed_cline_task(now: int) -> None:
     )
     # Non-Cline traffic: must NOT appear on /tasks because task_id IS NULL.
     ingest.record_request(
-        model="mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
-        tier="local-fast",
+        model="local-agent",
+        tier="local-long",
         in_tok=50, out_tok=10, actual_cost=0.0, latency_ms=200,
         ts=now - 5,
-        route_reason="tokens 50 <= 16000",
+        route_reason="tokens 50 <= 128000",
     )
 
 
@@ -191,9 +191,8 @@ def test_tasks_list_excludes_non_cline_rows(client: TestClient) -> None:
     _seed_cline_task(int(time.time()))
     r = client.get("/tasks/_list")
     assert r.status_code == 200
-    # The mlx model from the non-Cline seed row must NOT appear.
-    assert "mlx-community" not in r.text
-    assert "local-fast" not in r.text
+    # The local-agent model from the non-Cline seed row must NOT appear.
+    assert "local-agent" not in r.text
 
 
 def test_tasks_one_renders_per_turn_breakdown(client: TestClient) -> None:
@@ -380,7 +379,6 @@ def test_macm4_models_endpoint_returns_all_tiers(client: TestClient, monkeypatch
     body = r.json()
     ids = {m["id"] for m in body["data"]}
     expected = {
-        "local-fast",
         "local-long",
         "claude-haiku-4-5",
         "claude-sonnet-4-6",
@@ -397,7 +395,6 @@ def test_macm4_models_context_windows_match_litellm_config(client: TestClient, m
     monkeypatch.setattr(dash_app, "_probe_ollama_loaded_models", lambda: set())
     r = client.get("/api/macm4-models")
     by_id = {m["id"]: m for m in r.json()["data"]}
-    assert by_id["local-fast"]["context_window"] == 16_384
     assert by_id["local-long"]["context_window"] == 131_072
     # Anthropic 1M-context Opus is the cloud baseline.
     assert by_id["claude-opus-4-7"]["context_window"] == 1_000_000

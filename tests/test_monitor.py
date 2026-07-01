@@ -46,7 +46,6 @@ def _minimal_monitor_data() -> dict[str, Any]:
             {"key": "ollama",  "name": "Ollama",  "port": 11434, "ok": True,  "status_code": 200, "status": "UP"},
             {"key": "litellm", "name": "LiteLLM", "port": 4000,  "ok": True,  "status_code": 200, "status": "UP"},
             {"key": "claude_proxy", "name": "Claude proxy", "port": 4002, "ok": False, "status_code": 429, "status": "429"},
-            {"key": "mlx",     "name": "MLX",     "port": 8081,  "ok": False, "status_code": None, "status": "TIMEOUT"},
         ],
         "gortex": {
             "running": True, "pid": 1, "uptime": "1h", "state": "ready",

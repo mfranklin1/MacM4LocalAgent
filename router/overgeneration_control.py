@@ -8,8 +8,8 @@ model to run into its `max_tokens` ceiling mid-rewrite.
 
 Cursor talks to LiteLLM at /v1/chat/completions exactly like an OpenAI
 client would. We don't want to ask Cursor to change its behavior --
-we want every request to local-fast / local-long to be quietly
-tightened on the proxy side. This module produces the patches.
+we want every request to local-long to be quietly tightened on the
+proxy side. This module produces the patches.
 
 Two strategies, each pure-functional and testable in isolation:
 
@@ -143,23 +143,21 @@ QWEN3_THINK_PREFIX = "/think "
 # Substring that identifies a model family that actually understands the
 # Qwen3 /think runtime switch. We check the *resolved* upstream model id
 # (or the env that the tier alias maps to) rather than the tier alias
-# itself: `local-fast`/`local-long` are only Qwen3 because detected.env
-# currently points them at Qwen3-Coder-Next, and that can drift (the
-# .bak in this repo proves local-fast was once a Qwen2.5 model). If we
-# gated on the alias and the MLX dir got repointed to a non-Qwen3 model
-# we'd silently inject the literal string "/think " as junk into a model
-# that has no thinking switch. Gating on the real model id makes "use
-# the right model for thinking" something the code enforces.
+# itself: `local-long` is only Qwen3 because detected.env currently
+# points it at Qwen3-Coder-Next, and that can drift. If we gated on the
+# alias and OLLAMA_TAG got repointed to a non-Qwen3 model we'd silently
+# inject the literal string "/think " as junk into a model that has no
+# thinking switch. Gating on the real model id makes "use the right
+# model for thinking" something the code enforces.
 _THINK_CAPABLE_SIGNATURE = "qwen3"
 
 
 def _model_supports_think(model: str | None) -> bool:
     """True only if the resolved local tier is backed by a Qwen3 model.
 
-    `local-fast` resolves (via LiteLLM config) to the MLX model served
-    out of MLX_LOCAL_DIR / MLX_REPO; `local-long` resolves to the Ollama
-    tag in OLLAMA_TAG. Both must carry the Qwen3 signature for /think to
-    do anything. `local-agent` (llama3.1) and `local-coder-*`
+    `local-long` resolves (via LiteLLM config) to the Ollama tag in
+    OLLAMA_TAG, which must carry the Qwen3 signature for /think to do
+    anything. `local-agent` (llama3.1) and `local-coder-*`
     (qwen2.5-coder) never support the switch.
     """
     if not isinstance(model, str) or not model:
@@ -171,10 +169,6 @@ def _model_supports_think(model: str | None) -> bool:
     # Tiers we know are NOT Qwen3 regardless of env.
     if canonical == "local-agent" or canonical.startswith("local-coder-"):
         return False
-    if canonical == "local-fast":
-        mlx = (os.environ.get("MLX_LOCAL_DIR", "") + " "
-               + os.environ.get("MLX_REPO", "")).lower()
-        return _THINK_CAPABLE_SIGNATURE in mlx
     if canonical == "local-long":
         return _THINK_CAPABLE_SIGNATURE in os.environ.get("OLLAMA_TAG", "").lower()
     # Upstream-shaped ids passed through verbatim (e.g. "ollama/qwen3-...").
@@ -206,7 +200,6 @@ CLAUDE_THINKING_MAX_TOKENS_FLOOR = 8192
 # the static guardrail to keep a sane max_tokens cap and the stop
 # sequence in case the model falls back to prose+code in chat mode.
 LOCAL_MODEL_TOKENS = (
-    "local-fast",
     "local-long",
     "local-agent",
     "ollama/",

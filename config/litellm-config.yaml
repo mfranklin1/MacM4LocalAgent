@@ -1,18 +1,4 @@
 model_list:
-  - model_name: local-fast
-    litellm_params:
-      # The upstream model id MUST match what mlx_lm.server exposes via
-      # /v1/models. mlx_lm.server is started with --model <absolute-path>
-      # (MLX_LOCAL_DIR), so it advertises that path as the model id. Sending
-      # the HF repo id (MLX_REPO) instead causes mlx_lm to treat the request
-      # model as unknown and trigger a snapshot_download — the duplicate cache
-      # bug. Always use the local filesystem path here.
-      model: openai/@@MLX_LOCAL_DIR@@
-      api_base: http://127.0.0.1:@@MLX_PORT@@/v1
-      api_key: not-needed
-      input_cost_per_token: 0.0
-      output_cost_per_token: 0.0
-
   - model_name: local-long
     litellm_params:
       model: ollama/@@OLLAMA_TAG@@
@@ -106,19 +92,19 @@ model_list:
 
   - model_name: hybrid-auto
     # Magic alias: the size-based router rewrites `data["model"]` to one of
-    # the three real groups above before LiteLLM dispatches upstream, so the
+    # the real groups above before LiteLLM dispatches upstream, so the
     # upstream params here are never actually used. We keep them harmless.
     litellm_params:
-      model: openai/@@MLX_LOCAL_DIR@@
-      api_base: http://127.0.0.1:@@MLX_PORT@@/v1
+      model: ollama/@@OLLAMA_TAG@@
+      api_base: http://127.0.0.1:@@OLLAMA_PORT@@
       api_key: not-needed
 
   # ----------------------------------------------------------------------
   # Turbo context tiers (on-demand; only active when TURBO_ENABLED=1)
   # ----------------------------------------------------------------------
   # These backends run a separate mlx_lm.server on dedicated ports so the
-  # primary MLX (local-fast) and Ollama (local-long) are never unloaded mid-
-  # conversation. Ports 8084/8085 are reserved; port 8082 is the experimental
+  # primary Ollama (local-long) is never unloaded mid-conversation. Ports
+  # 8084/8085 are reserved; port 8082 is the experimental
   # turboquant-experimental-serve llama.cpp probe and must not be reused here.
   #
   # Model path is substituted from TURBO_MODEL_LOCAL_DIR (set by turbo-install);
@@ -152,14 +138,6 @@ model_list:
   # callback maps `gpt-hybrid-auto` -> the size-based decision, and the
   # over-generation controls treat `gpt-local-*` as local. From scripts
   # / CLI / benches, keep using the short names (`local-agent`, etc.).
-  - model_name: gpt-local-fast
-    litellm_params:
-      model: openai/@@MLX_LOCAL_DIR@@
-      api_base: http://127.0.0.1:@@MLX_PORT@@/v1
-      api_key: not-needed
-      input_cost_per_token: 0.0
-      output_cost_per_token: 0.0
-
   - model_name: gpt-local-long
     litellm_params:
       model: ollama/@@OLLAMA_TAG@@
@@ -227,8 +205,8 @@ model_list:
 
   - model_name: gpt-hybrid-auto
     litellm_params:
-      model: openai/@@MLX_LOCAL_DIR@@
-      api_base: http://127.0.0.1:@@MLX_PORT@@/v1
+      model: ollama/@@OLLAMA_TAG@@
+      api_base: http://127.0.0.1:@@OLLAMA_PORT@@
       api_key: not-needed
 
 litellm_settings:
