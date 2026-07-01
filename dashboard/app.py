@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import pathlib
 import sys
 import time
@@ -47,6 +48,13 @@ from dashboard import monitor as _monitor  # noqa: E402
 # read here on every /stats poll. The two processes never share
 # memory, so this file is the IPC channel.
 ACTIVE_PATH = REPO_ROOT / ".logs" / "active.json"
+
+# The backend-status endpoints are served by a dedicated uvicorn sidecar
+# started in scripts/run_litellm.py, NOT by the LiteLLM proxy on :4000
+# (LiteLLM freezes its ASGI stack at import time, so the routes can't be
+# mounted there). The sidecar binds :4010. Querying :4000 returns 404 and
+# leaves this card blank — env-overridable in case the sidecar port moves.
+BACKEND_STATUS_PORT = int(os.environ.get("BACKEND_STATUS_PORT", "4010"))
 
 app = FastAPI(title="MacM4LocalAgent Dashboard")
 templates = Jinja2Templates(directory=str(REPO_ROOT / "dashboard" / "templates"))
@@ -123,7 +131,7 @@ _BACKEND_STATUS_DEFAULT: dict[str, Any] = {
 
 
 def _load_backend_status() -> dict[str, Any]:
-    """GET http://127.0.0.1:4000/backend/status and return its JSON.
+    """GET the backend-status sidecar (:4010 by default) and return its JSON.
 
     Returns a safe default dict on any failure (connection refused,
     timeout, unexpected response shape) so the dashboard card is always
@@ -132,7 +140,7 @@ def _load_backend_status() -> dict[str, Any]:
     The 300 ms timeout is deliberate: the dashboard poll loop runs
     every 5 seconds; a slow proxy must not stall the render cycle.
     """
-    url = "http://127.0.0.1:4000/backend/status"
+    url = f"http://127.0.0.1:{BACKEND_STATUS_PORT}/backend/status"
     try:
         if _HAS_HTTPX:
             resp = _httpx.get(url, timeout=0.3)

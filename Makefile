@@ -103,7 +103,7 @@ status: ## Show running ports
 # ---------- backend lifecycle ----------
 
 backend-status: ## Show active backend, state, and pending requests
-	GET http://127.0.0.1:4000/backend/status | python3 -m json.tool
+	GET http://127.0.0.1:4010/backend/status | python3 -m json.tool
 
 backend-stop-large: ## Stop the current large (non-fast) backend safely
 	@python3 -c "import asyncio; from router.backend_lifecycle import lifecycle_manager; asyncio.run(lifecycle_manager.stop_backend(lifecycle_manager.active_backend))"

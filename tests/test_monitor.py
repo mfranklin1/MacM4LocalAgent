@@ -7,6 +7,7 @@ Organisation:
 
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import subprocess
@@ -56,6 +57,7 @@ def _minimal_monitor_data() -> dict[str, Any]:
             "active_task_id": "1782834473054", "entry_count": 3,
             "pack_exists": True, "task_dir_mtime": 1700000000.0,
         },
+        "active": [],
         "calls": [],
         "summary": {
             "total_requests": 8, "total_input_tokens": 100000,
@@ -528,6 +530,59 @@ def test_recent_calls_never_raises_on_bad_db(monkeypatch: pytest.MonkeyPatch) ->
 
 
 # ---------------------------------------------------------------------------
+# active_requests()
+# ---------------------------------------------------------------------------
+
+def _write_active(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, payload: Any) -> pathlib.Path:
+    p = tmp_path / "active.json"
+    if payload is not None:
+        p.write_text(payload if isinstance(payload, str) else json.dumps(payload))
+    monkeypatch.setattr(mon, "ACTIVE_PATH", p, raising=True)
+    return p
+
+
+def test_active_requests_empty_when_file_missing(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(mon, "ACTIVE_PATH", tmp_path / "no-such.json", raising=True)
+    assert mon.active_requests() == []
+
+
+def test_active_requests_returns_rows_with_elapsed(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    started = time.time() - 12.0
+    _write_active(tmp_path, monkeypatch, [
+        {"call_id": "c1", "started": started, "model": "ollama/qwen3",
+         "tier": "local-long", "in_tok_est": 72570, "route_reason": "cline-mode: complex"},
+    ])
+    rows = mon.active_requests()
+    assert len(rows) == 1
+    assert rows[0]["call_id"] == "c1"
+    assert rows[0]["elapsed_sec"] >= 12.0
+
+
+def test_active_requests_newest_first(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    now = time.time()
+    _write_active(tmp_path, monkeypatch, [
+        {"call_id": "old", "started": now - 100},
+        {"call_id": "new", "started": now - 1},
+    ])
+    rows = mon.active_requests()
+    assert [r["call_id"] for r in rows] == ["new", "old"]
+
+
+def test_active_requests_never_raises_on_garbage(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _write_active(tmp_path, monkeypatch, "{not json")
+    assert mon.active_requests() == []
+
+
+def test_active_requests_ignores_non_list_and_non_dict_rows(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _write_active(tmp_path, monkeypatch, {"not": "a list"})
+    assert mon.active_requests() == []
+    _write_active(tmp_path, monkeypatch, ["string", 3, {"call_id": "ok", "started": time.time()}])
+    rows = mon.active_requests()
+    assert len(rows) == 1
+    assert rows[0]["call_id"] == "ok"
+
+
+# ---------------------------------------------------------------------------
 # today_summary()
 # ---------------------------------------------------------------------------
 
@@ -556,7 +611,7 @@ def test_monitor_data_has_all_top_level_keys(tmp_db: pathlib.Path, monkeypatch: 
     monkeypatch.setattr(subprocess, "run",
                         lambda *a, **kw: _make_completed(0, _SAMPLE_STATUS))
     data = mon.monitor_data()
-    assert {"health", "gortex", "janitor", "calls", "summary", "generated_at"} <= data.keys()
+    assert {"health", "gortex", "janitor", "active", "calls", "summary", "generated_at"} <= data.keys()
 
 
 def test_monitor_data_generated_at_is_recent(tmp_db: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
@@ -612,6 +667,31 @@ def test_monitor_live_renders_health_grid(client: TestClient, monkeypatch: pytes
     assert r.status_code == 200
     assert "Ollama" in r.text
     assert "LiteLLM" in r.text
+
+
+def test_monitor_live_shows_in_flight_row(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _with_active() -> dict[str, Any]:
+        d = _minimal_monitor_data()
+        d["active"] = [{
+            "call_id": "c1", "started": 1000.0, "elapsed_sec": 42.0,
+            "model": "ollama/qwen3-coder-next", "tier": "local-long",
+            "in_tok_est": 72570, "task_text_short": "plan the refactor",
+            "route_reason": "cline-mode: complex",
+        }]
+        return d
+    monkeypatch.setattr(mon, "monitor_data", _with_active)
+    r = client.get("/monitor/_live")
+    assert r.status_code == 200
+    assert "Running now" in r.text
+    assert "1 in flight" in r.text
+    assert "plan the refactor" in r.text
+
+
+def test_monitor_live_shows_idle_when_no_active(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(mon, "monitor_data", _minimal_monitor_data)
+    r = client.get("/monitor/_live")
+    assert r.status_code == 200
+    assert "no request in flight" in r.text
 
 
 def test_monitor_live_shows_gortex_connected(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
