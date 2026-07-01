@@ -40,6 +40,7 @@ from cost.ingest import connect       # noqa: E402
 from cost.pricing import sonnet_rate  # noqa: E402
 from cost.savings import summarize    # noqa: E402
 from compare.ab import run as ab_run  # noqa: E402
+from dashboard import monitor as _monitor  # noqa: E402
 
 # Mirror of the in-flight registry maintained by the LiteLLM-side
 # router callback. Written by router/route_by_size.py:_flush_active(),
@@ -649,6 +650,36 @@ def macm4_models() -> JSONResponse:
     """Rich model metadata for Cline (and other clients) to drive UI
     badges, cost-savings widgets, and warm-up indicators."""
     return JSONResponse(_macm4_models_payload())
+
+
+# ----- Cline Session Monitor ------------------------------------------------
+#
+# Live monitoring tab: routing decisions, context subsystems (janitor,
+# headroom), gortex MCP status, and endpoint health — all in one view.
+# The HTML page shell loads instantly; the HTMX fragment /_live refreshes
+# every 3 s so data stays current without a full page reload.
+
+@app.get("/monitor", response_class=HTMLResponse)
+def monitor(request: Request) -> Any:
+    """Cline Session Monitor page shell. Content loaded via HTMX."""
+    return templates.TemplateResponse(request, "monitor.html", {})
+
+
+@app.get("/monitor/_live", response_class=HTMLResponse)
+def monitor_live(request: Request) -> Any:
+    """HTMX-polled fragment: all live monitor data rendered as HTML."""
+    data = _monitor.monitor_data()
+    return templates.TemplateResponse(request, "_monitor_live.html", {"data": data})
+
+
+@app.get("/api/monitor")
+def api_monitor() -> JSONResponse:
+    """JSON endpoint exposing the same data as the monitor UI fragment.
+
+    Suitable for statusline scripts, external monitors, or any tool that
+    needs programmatic access to Cline session state without scraping HTML.
+    """
+    return JSONResponse(_monitor.monitor_data())
 
 
 if __name__ == "__main__":

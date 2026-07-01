@@ -8,7 +8,7 @@ LAUNCHD_DIR := $(REPO_ROOT)/launchd
 LAUNCH_AGENTS := $(HOME)/Library/LaunchAgents
 PLISTS := com.local.ollama com.local.mlx com.local.litellm com.local.dashboard com.local.ollama-warm com.local.watchdog com.local.claude-proxy
 
-.PHONY: help detect install reconfigure start stop restart status dashboard verify watchdog report compare clean nuke test test-py test-sh lint finalize downloads downloads-watch wait-and-finalize resume-ollama bench bench-local bench-claude bench-cursor bench-report bench-pull-spend turboquant-status turboquant-upgrade turboquant-watch turboquant-experimental-build turboquant-experimental-serve turboquant-experimental-stop turboquant-experimental-status turboquant-experimental-ab turboquant-experimental-nuke perf perf-short perf-stress perf-prefix perf-prefix-cold check-pricing cline warm offline online offline-status worktree worktree-rm worktree-sync worktree-list backend-status backend-stop-large turbo-install turbo-enable turbo-disable turbo-status turbo-start-256 turbo-start-512 turbo-verify turbo-stop turbo-bench janitor-enable janitor-disable janitor-status janitor-show-ledger janitor-show-active-context janitor-reset janitor-run janitor-bench context-compression-install context-compression-enable context-compression-disable context-compression-status context-compression-bench headroom-verify upgrade-to-q8 TURBO_ENABLED CONTEXT_JANITOR_ENABLED TURBO_MODEL_LOCAL_DIR
+.PHONY: help detect install reconfigure start stop restart status dashboard monitor verify watchdog report compare clean nuke test test-py test-sh lint finalize downloads downloads-watch wait-and-finalize resume-ollama bench bench-local bench-claude bench-cursor bench-report bench-pull-spend turboquant-status turboquant-upgrade turboquant-watch turboquant-experimental-build turboquant-experimental-serve turboquant-experimental-stop turboquant-experimental-status turboquant-experimental-ab turboquant-experimental-nuke perf perf-short perf-stress perf-prefix perf-prefix-cold check-pricing cline warm offline online offline-status worktree worktree-rm worktree-sync worktree-list backend-status backend-stop-large turbo-install turbo-enable turbo-disable turbo-status turbo-start-256 turbo-start-512 turbo-verify turbo-stop turbo-bench janitor-enable janitor-disable janitor-status janitor-show-ledger janitor-show-active-context janitor-reset janitor-run janitor-bench context-compression-install context-compression-enable context-compression-disable context-compression-status context-compression-bench headroom-verify upgrade-to-q8 TURBO_ENABLED CONTEXT_JANITOR_ENABLED TURBO_MODEL_LOCAL_DIR
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -111,6 +111,9 @@ backend-stop-large: ## Stop the current large (non-fast) backend safely
 
 dashboard: ## Open the cost/savings dashboard
 	@open http://127.0.0.1:4001
+
+monitor: ## Open the Cline session monitor (routing, context, gortex, health)
+	@open http://127.0.0.1:4001/monitor
 
 verify: ## Run endpoint health + smoke matrix
 	@bash $(SCRIPTS)/90-verify.sh
