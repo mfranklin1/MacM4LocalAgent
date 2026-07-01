@@ -31,7 +31,7 @@ from dataclasses import dataclass
 # When the table below was last reconciled with Anthropic's docs.
 # scripts/check_claude_pricing.py compares against this and the
 # startup nag fires when this is more than PRICING_STALE_DAYS old.
-PRICING_LAST_UPDATED = "2026-05-02"
+PRICING_LAST_UPDATED = "2026-07-01"
 PRICING_STALE_DAYS = 30
 
 # The model whose rates define `shadow_cost`. shadow_cost is the
@@ -69,6 +69,21 @@ def _per_token(per_mtok: float) -> float:
 # Source of truth: https://docs.anthropic.com/en/docs/about-claude/pricing
 # Last reconciled: see PRICING_LAST_UPDATED above.
 CLAUDE_PRICES: dict[str, ClaudeRate] = {
+    "claude-sonnet-5": ClaudeRate(
+        # Introductory pricing through 2026-08-31; standard after is $3/$15/1M.
+        input=_per_token(2.0),
+        output=_per_token(10.0),
+        cache_write_5m=_per_token(2.50),
+        cache_write_1h=_per_token(4.0),
+        cache_read=_per_token(0.20),
+    ),
+    "claude-opus-4-8": ClaudeRate(
+        input=_per_token(5.0),
+        output=_per_token(25.0),
+        cache_write_5m=_per_token(6.25),
+        cache_write_1h=_per_token(10.0),
+        cache_read=_per_token(0.50),
+    ),
     "claude-opus-4-7": ClaudeRate(
         input=_per_token(5.0),
         output=_per_token(25.0),
@@ -166,6 +181,8 @@ CLAUDE_PRICES: dict[str, ClaudeRate] = {
 # the canonical key. Map them here so callers don't have to know.
 _ALIASES: dict[str, str] = {
     # LiteLLM/Anthropic shorthand sometimes uses underscores or no hyphens.
+    "claude-sonnet-5.0": "claude-sonnet-5",
+    "claude-opus-4.8":   "claude-opus-4-8",
     "claude-sonnet-4.6": "claude-sonnet-4-6",
     "claude-opus-4.7":   "claude-opus-4-7",
     "claude-opus-4.6":   "claude-opus-4-6",
@@ -173,7 +190,7 @@ _ALIASES: dict[str, str] = {
     # The "claude-code" tier alias used internally by this proxy. Must
     # match the upstream `model` field for `claude-code` in
     # config/litellm-config.yaml. If you change one, change both.
-    "claude-code":       "claude-opus-4-7",
+    "claude-code":       "claude-sonnet-5",
 }
 
 # Track which unknown models we've already warned about so we only

@@ -584,8 +584,8 @@ _CLINE_TASK_RE = re.compile(r"<task>\s*(.*?)\s*</task>", re.DOTALL | re.IGNORECA
 # the runbook.
 _MODEL_OVERRIDE_TAGS: dict[str, str] = {
     "haiku":  "claude-haiku-4-5",
-    "sonnet": "claude-sonnet-4-6",
-    "opus":   "claude-opus-4-7",
+    "sonnet": "claude-sonnet-5",
+    "opus":   "claude-opus-4-8",
 }
 _OVERRIDE_TAG_RE = re.compile(
     r"^\s*\[(haiku|sonnet|opus)\]\s*",
@@ -1173,8 +1173,8 @@ class SizeBasedRouter(_LiteLLMCustomLogger):
                 "local-agent",
                 "claude-code",
                 "claude-haiku-4-5",
-                "claude-sonnet-4-6",
-                "claude-opus-4-7",
+                "claude-sonnet-5",
+                "claude-opus-4-8",
             ):
                 canonical = requested[len("gpt-"):]
                 data["model"] = canonical

@@ -470,13 +470,13 @@ def test_pre_call_downgrades_gpt_claude_alias_when_offline(
     the canonicalization step strips `gpt-` so by the time we hit
     the chokepoint the model name is `claude-*`."""
     data: dict[str, Any] = {
-        "model": "gpt-claude-opus-4-7",
+        "model": "gpt-claude-opus-4-8",
         "messages": [{"role": "user", "content": "hello"}],
     }
     new = asyncio.run(router.async_pre_call_hook(None, None, data, "completion"))
     assert new is not None
     assert new["model"] == DEFAULT_OFFLINE_FALLBACK
-    assert new["metadata"]["offline_orig_model"] == "claude-opus-4-7"
+    assert new["metadata"]["offline_orig_model"] == "claude-opus-4-8"
 
 
 def test_pre_call_strict_mode_raises(

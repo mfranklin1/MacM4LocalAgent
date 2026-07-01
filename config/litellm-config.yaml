@@ -58,9 +58,9 @@ model_list:
 
   - model_name: claude-code
     # Default tier for the hybrid-auto router when it escalates to Claude.
-    # Pinned to Sonnet 4.6 -- higher per-hour request quota than Opus on the
+    # Pinned to Sonnet 5 -- higher per-hour request quota than Opus on the
     # Team subscription token, which prevents rate-limit storms when Cline
-    # retries rapidly. Use claude-opus-4-7 directly for tasks that need it.
+    # retries rapidly. Use claude-opus-4-8 directly for tasks that need it.
     # Override per-turn with [haiku] or [opus] tags. Pricing per token
     # in cost.db is computed from cost/pricing.py, NOT the values below;
     # the input/output_cost_per_token fields here only affect LiteLLM's
@@ -71,11 +71,11 @@ model_list:
     # token; CLAUDE_AUTH_MODE=apikey uses ANTHROPIC_API_KEY instead.
     #
     litellm_params:
-      model: anthropic/claude-sonnet-4-6
+      model: anthropic/claude-sonnet-5
       api_base: http://127.0.0.1:4002/subscription
       api_key: not-needed
-      input_cost_per_token: 0.000003
-      output_cost_per_token: 0.000015
+      input_cost_per_token: 0.000002
+      output_cost_per_token: 0.000010
 
   # Per-tier Claude aliases. Targets for the inline override tags
   # ([haiku] / [sonnet] / [opus]) and for callers that want to pin
@@ -88,17 +88,17 @@ model_list:
       input_cost_per_token: 0.000001
       output_cost_per_token: 0.000005
 
-  - model_name: claude-sonnet-4-6
+  - model_name: claude-sonnet-5
     litellm_params:
-      model: anthropic/claude-sonnet-4-6
+      model: anthropic/claude-sonnet-5
       api_base: http://127.0.0.1:4002/subscription
       api_key: not-needed
-      input_cost_per_token: 0.000003
-      output_cost_per_token: 0.000015
+      input_cost_per_token: 0.000002
+      output_cost_per_token: 0.000010
 
-  - model_name: claude-opus-4-7
+  - model_name: claude-opus-4-8
     litellm_params:
-      model: anthropic/claude-opus-4-7
+      model: anthropic/claude-opus-4-8
       api_base: http://127.0.0.1:4002/subscription
       api_key: not-needed
       input_cost_per_token: 0.000005
@@ -194,11 +194,11 @@ model_list:
   - model_name: gpt-claude-code
     # Cursor-shaped mirror of `claude-code`. Same upstream model.
     litellm_params:
-      model: anthropic/claude-opus-4-7
+      model: anthropic/claude-sonnet-5
       api_base: http://127.0.0.1:4002/subscription
       api_key: not-needed
-      input_cost_per_token: 0.000005
-      output_cost_per_token: 0.000025
+      input_cost_per_token: 0.000002
+      output_cost_per_token: 0.000010
 
   # Cursor-shaped mirrors of the per-tier Claude aliases.
   - model_name: gpt-claude-haiku-4-5
@@ -209,17 +209,17 @@ model_list:
       input_cost_per_token: 0.000001
       output_cost_per_token: 0.000005
 
-  - model_name: gpt-claude-sonnet-4-6
+  - model_name: gpt-claude-sonnet-5
     litellm_params:
-      model: anthropic/claude-sonnet-4-6
+      model: anthropic/claude-sonnet-5
       api_base: http://127.0.0.1:4002/subscription
       api_key: not-needed
-      input_cost_per_token: 0.000003
-      output_cost_per_token: 0.000015
+      input_cost_per_token: 0.000002
+      output_cost_per_token: 0.000010
 
-  - model_name: gpt-claude-opus-4-7
+  - model_name: gpt-claude-opus-4-8
     litellm_params:
-      model: anthropic/claude-opus-4-7
+      model: anthropic/claude-opus-4-8
       api_base: http://127.0.0.1:4002/subscription
       api_key: not-needed
       input_cost_per_token: 0.000005
@@ -255,11 +255,11 @@ router_settings:
   # auto-injected by LiteLLM for Sonnet/Opus but rejected by Haiku).
   fallbacks:
     - claude-code: ["local-long"]
-    - claude-sonnet-4-6: ["local-long"]
-    - claude-opus-4-7: ["local-long"]
+    - claude-sonnet-5: ["local-long"]
+    - claude-opus-4-8: ["local-long"]
     - gpt-claude-code: ["gpt-local-long"]
-    - gpt-claude-sonnet-4-6: ["gpt-local-long"]
-    - gpt-claude-opus-4-7: ["gpt-local-long"]
+    - gpt-claude-sonnet-5: ["gpt-local-long"]
+    - gpt-claude-opus-4-8: ["gpt-local-long"]
 
 # No general_settings.master_key by design.
 #
