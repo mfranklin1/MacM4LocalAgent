@@ -914,7 +914,7 @@ def test_decide_tier_cline_tag_sticky_does_not_expire_in_3_turns() -> None:
 
     msgs1 = _cline_msgs(task)
     tier1, reason1, _ = decide_tier_cline(msgs1)
-    assert tier1 == "claude-opus-4-7"
+    assert tier1 == "claude-opus-4-8"
     assert "[opus]" in reason1
 
     # 5 follow-up turns (Cline replays the tagged task verbatim
@@ -1237,10 +1237,10 @@ def test_log_success_persists_null_task_id_for_non_cline(
     "task,expected_alias,expected_tag",
     [
         ("[haiku] What is 2+2?",         "claude-haiku-4-5",  "haiku"),
-        ("[sonnet] Refactor this fn",    "claude-sonnet-4-6", "sonnet"),
-        ("[opus] design a billing svc",  "claude-opus-4-7",   "opus"),
-        ("[OPUS] uppercase tag works",   "claude-opus-4-7",   "opus"),
-        ("  [opus]   leading whitespace OK", "claude-opus-4-7", "opus"),
+        ("[sonnet] Refactor this fn",    "claude-sonnet-5", "sonnet"),
+        ("[opus] design a billing svc",  "claude-opus-4-8",   "opus"),
+        ("[OPUS] uppercase tag works",   "claude-opus-4-8",   "opus"),
+        ("  [opus]   leading whitespace OK", "claude-opus-4-8", "opus"),
     ],
 )
 def test_extract_model_override_recognizes_leading_tags(
@@ -1279,14 +1279,14 @@ def test_decide_tier_cline_haiku_tag_routes_to_haiku() -> None:
 def test_decide_tier_cline_sonnet_tag_routes_to_sonnet() -> None:
     msgs = _cline_msgs("[sonnet] Add error handling here")
     tier, reason, _ = decide_tier_cline(msgs)
-    assert tier == "claude-sonnet-4-6"
+    assert tier == "claude-sonnet-5"
     assert "[sonnet]" in reason
 
 
 def test_decide_tier_cline_opus_tag_routes_to_opus() -> None:
     msgs = _cline_msgs("[opus] design a billing service")
     tier, reason, _ = decide_tier_cline(msgs)
-    assert tier == "claude-opus-4-7"
+    assert tier == "claude-opus-4-8"
     assert "[opus]" in reason
 
 
@@ -1298,7 +1298,7 @@ def test_decide_tier_cline_opus_tag_beats_complexity_classifier() -> None:
         "[opus] Refactor the entire authentication architecture across multiple files"
     )
     tier, reason, _ = decide_tier_cline(msgs)
-    assert tier == "claude-opus-4-7"
+    assert tier == "claude-opus-4-8"
     assert "[opus]" in reason
 
 
@@ -1335,7 +1335,7 @@ def test_decide_tier_cline_opus_tag_is_sticky() -> None:
 
     msgs1 = _cline_msgs(task)
     tier1, _, _ = decide_tier_cline(msgs1)
-    assert tier1 == "claude-opus-4-7"
+    assert tier1 == "claude-opus-4-8"
 
     # Cline keeps the original `<task>` envelope verbatim across
     # turns, just appending more assistant/user pairs. Same task
@@ -1370,7 +1370,7 @@ def test_decide_tier_legacy_opus_tag_beats_token_count_default() -> None:
     [opus] forces the upgrade."""
     msgs = [{"role": "user", "content": "[opus] hi"}]
     tier, _, _ = decide_tier(msgs)
-    assert tier == "claude-opus-4-7"
+    assert tier == "claude-opus-4-8"
 
 
 def test_decide_tier_legacy_local_tag_still_beats_override_tag() -> None:
@@ -1387,7 +1387,7 @@ def test_decide_tier_legacy_local_tag_still_beats_override_tag() -> None:
 def test_pre_call_opus_tag_rewrites_model_for_cline() -> None:
     """End-to-end through async_pre_call_hook: a Cline request with
     a leading [opus] tag must arrive at LiteLLM with model rewritten
-    to claude-opus-4-7 so the YAML routes it to anthropic/claude-opus-4-7."""
+    to claude-opus-4-8 so the YAML routes it to anthropic/claude-opus-4-8."""
     router = SizeBasedRouter()
     data: dict[str, Any] = {
         "model": "hybrid-auto",
@@ -1395,7 +1395,7 @@ def test_pre_call_opus_tag_rewrites_model_for_cline() -> None:
     }
     new = asyncio.run(router.async_pre_call_hook(None, None, data, "completion"))
     assert new is not None
-    assert new["model"] == "claude-opus-4-7"
+    assert new["model"] == "claude-opus-4-8"
     meta = new["metadata"]
     assert "[opus]" in meta["route_reason"]
 

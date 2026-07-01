@@ -53,7 +53,7 @@ def test_canonical_lookup_haiku_4_5() -> None:
 @pytest.mark.parametrize(
     "alias,expected_in_per_mtok",
     [
-        ("claude-code",          5.0),    # internal proxy alias -> Opus 4.7 (default Claude tier)
+        ("claude-code",          2.0),    # internal proxy alias -> Sonnet 5 (default Claude tier)
         ("claude-opus-4.7",      5.0),    # dotted variant
         ("claude-haiku-4.5",     1.0),    # dotted variant
     ],
@@ -69,8 +69,8 @@ def test_claude_code_alias_matches_yaml_default() -> None:
     config/litellm-config.yaml. If the YAML default changes, this
     test will fail and remind us to update _ALIASES too."""
     rate = pricing.claude_rate("claude-code")
-    opus_rate = pricing.claude_rate("claude-opus-4-7")
-    assert rate == opus_rate, (
+    sonnet5_rate = pricing.claude_rate("claude-sonnet-5")
+    assert rate == sonnet5_rate, (
         "claude-code alias is out of sync with config/litellm-config.yaml. "
         "Both should point to the same Claude tier."
     )
