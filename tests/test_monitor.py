@@ -137,10 +137,25 @@ def test_probe_http_never_raises_on_garbage_url() -> None:
 # to always miss so each test observes its own monkeypatched subprocess call.
 # ---------------------------------------------------------------------------
 
+# Real `gortex daemon status` output: a column-aligned summary block (no
+# colons) plus a separate box-drawn "MCP sessions:" table with a `client`
+# column -- there's no --json flag to fall back on.
 _SAMPLE_STATUS = (
-    "pid: 34646, uptime: 14h22m, state: ready (after warmup: 4h2m ago)\n"
-    "27 repos tracked\n"
-    "  3 MCP sessions: [cli:claude-code(14h22m), cli:claude-code(8h27m), cli:cline(36m)]"
+    " daemon    v0.47.0+775d8bb3\n"
+    " pid       34646\n"
+    " socket    /Users/martinfr/.gortex/cache/daemon.sock\n"
+    " uptime    14h22m\n"
+    " state     ready (warmup 4h2m ago)\n"
+    " sessions  3\n"
+    "\n"
+    "MCP sessions:\n"
+    "┌───────────────────────┬────────┬─────────┬───────────┐\n"
+    "│ id                    │ client │ version │ connected │\n"
+    "├───────────────────────┼────────┼─────────┼───────────┤\n"
+    "│ sess_aaaaaaaaaaaaaaaa │ cli    │         │    14h22m │\n"
+    "│ sess_bbbbbbbbbbbbbbbb │ cli    │         │     8h27m │\n"
+    "│ sess_cccccccccccccccc │ Cline  │ 3.83.0  │      36m  │\n"
+    "└───────────────────────┴────────┴─────────┴───────────┘\n"
 )
 
 
@@ -205,13 +220,57 @@ def test_gortex_status_parses_all_fields(tmp_path: pathlib.Path, monkeypatch: py
 def test_gortex_status_no_cline_sessions(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _live_pidfile(tmp_path, monkeypatch, os.getpid())
     raw = (
-        "pid: 1, uptime: 1m, state: ready\n"
-        "2 MCP sessions: [cli:claude-code(1m), cli:claude-code(2m)]"
+        " pid       1\n"
+        " uptime    1m\n"
+        " state     ready\n"
+        " sessions  2\n"
+        "\n"
+        "MCP sessions:\n"
+        "┌───────────────────────┬────────┬─────────┬───────────┐\n"
+        "│ id                    │ client │ version │ connected │\n"
+        "├───────────────────────┼────────┼─────────┼───────────┤\n"
+        "│ sess_aaaaaaaaaaaaaaaa │ cli    │         │        1m │\n"
+        "│ sess_bbbbbbbbbbbbbbbb │ cli    │         │        2m │\n"
+        "└───────────────────────┴────────┴─────────┴───────────┘\n"
     )
     monkeypatch.setattr(subprocess, "run", lambda *a, **kw: _make_completed(0, raw))
     g = mon.gortex_mcp_status()
     assert g["cline_sessions"] == 0
     assert g["mcp_sessions"] == 2
+
+
+def test_gortex_status_repo_literally_named_cline_is_not_counted_as_a_session(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One of the tracked repos in this workspace is itself named "cline".
+    Its row in the "tracked repos" table (`│ cline    │ github  │ ...`) must
+    not be mistaken for a Cline MCP session -- this was a real false
+    positive caught against live daemon output."""
+    _live_pidfile(tmp_path, monkeypatch, os.getpid())
+    raw = (
+        " pid       1\n"
+        " uptime    1m\n"
+        " state     ready\n"
+        " sessions  1\n"
+        "\n"
+        "tracked repos:\n"
+        "┌──────────┬─────────┐\n"
+        "│ repo     │ workspace │\n"
+        "├──────────┼─────────┤\n"
+        "│ cline                                                                    │ github  │\n"
+        "└──────────┴─────────┘\n"
+        "\n"
+        "MCP sessions:\n"
+        "┌───────────────────────┬────────┬─────────┬───────────┐\n"
+        "│ id                    │ client │ version │ connected │\n"
+        "├───────────────────────┼────────┼─────────┼───────────┤\n"
+        "│ sess_aaaaaaaaaaaaaaaa │ cli    │         │        1m │\n"
+        "└───────────────────────┴────────┴─────────┴───────────┘\n"
+    )
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: _make_completed(0, raw))
+    g = mon.gortex_mcp_status()
+    assert g["cline_sessions"] == 0
+    assert g["mcp_sessions"] == 1
 
 
 def test_gortex_status_daemon_not_running(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:

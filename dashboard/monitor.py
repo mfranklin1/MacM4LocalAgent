@@ -139,23 +139,38 @@ def gortex_liveness() -> dict[str, Any]:
 
 
 def _parse_gortex_status(raw: str) -> dict[str, Any]:
-    """Parse the structured fields out of `gortex daemon status` stdout."""
+    """Parse the structured fields out of `gortex daemon status` stdout.
+
+    The CLI prints a column-aligned summary block (`label<whitespace>value`,
+    no colons) followed by a separate "MCP sessions:" box-drawn table with a
+    `client` column -- there is no `--json` output to parse instead. This
+    format is not a stable contract; if a `gortex` upgrade reformats it,
+    these fields silently go back to their defaults (caught by detail_ok
+    remaining True while mcp_sessions/cline_sessions read 0 for a daemon
+    that's actually busy).
+    """
     info: dict[str, Any] = {**_GORTEX_DETAIL_DEFAULT, "detail_ok": True}
 
-    m = re.search(r"uptime:\s*([^,\n]+)", raw)
+    m = re.search(r"^\s*uptime\s+(\S+)", raw, re.MULTILINE)
     if m:
-        info["uptime"] = m.group(1).strip()
+        info["uptime"] = m.group(1)
 
-    m = re.search(r"state:\s*(\S+)", raw)
+    m = re.search(r"^\s*state\s+(\S+)", raw, re.MULTILINE)
     if m:
         info["state"] = m.group(1).rstrip(",)")
 
-    m = re.search(r"(\d+)\s+MCP\s+sessions?", raw)
+    m = re.search(r"^\s*sessions\s+(\d+)", raw, re.MULTILINE)
     if m:
         info["mcp_sessions"] = int(m.group(1))
 
-    # Count session descriptors that contain "cline" (case-insensitive).
-    info["cline_sessions"] = len(re.findall(r"cli:cline", raw, flags=re.IGNORECASE))
+    # Rows in the "MCP sessions:" table look like:
+    #   │ sess_xxxxxxxxxxxxxxxx │ Cline  │ 3.83.0  │    12m23s │ /path │
+    # Count rows whose `client` column is "Cline" (case-insensitive). Must
+    # search only the text *after* the "MCP sessions:" header -- one of the
+    # tracked repos is itself named "cline", and its row in the "tracked
+    # repos" table (`│ cline    │ github  │ ...`) otherwise also matches.
+    _, _, sessions_table = raw.partition("MCP sessions:")
+    info["cline_sessions"] = len(re.findall(r"│\s*Cline\s*│", sessions_table, flags=re.IGNORECASE))
     return info
 
 
