@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS requests (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   ts            INTEGER NOT NULL,                        -- unix seconds
   model         TEXT    NOT NULL,
-  tier          TEXT    NOT NULL,                        -- claude | local-fast | local-long
+  tier          TEXT    NOT NULL,                        -- claude | local-long
   input_tok     INTEGER NOT NULL DEFAULT 0,
   output_tok    INTEGER NOT NULL DEFAULT 0,
   actual_cost   REAL    NOT NULL DEFAULT 0.0,            -- USD; 0 for local

@@ -28,7 +28,6 @@ probe_port() {
 echo
 echo "== Port health =="
 probe_port "$OLLAMA_PORT"                       "ollama"
-probe_port "$MLX_PORT"                          "mlx_lm.server"
 probe_port "$LITELLM_PORT"                      "litellm"
 probe_port "$DASHBOARD_PORT"                    "dashboard"
 probe_port "${CLAUDE_PROXY_PORT:-4002}"         "claude-proxy"
@@ -137,7 +136,7 @@ echo "== LiteLLM model registry =="
 # The proxy is loopback-only (127.0.0.1) with no auth gate; no bearer token needed.
 RESP="$(curl -fsS "http://127.0.0.1:${LITELLM_PORT}/v1/models" || true)"
 if [[ -n "$RESP" ]]; then
-  for m in local-fast local-long claude-code hybrid-auto; do
+  for m in local-long claude-code hybrid-auto; do
     if echo "$RESP" | grep -q "\"$m\""; then ok "model '$m' registered"; else fail "model '$m' missing"; fi
   done
 else
@@ -159,13 +158,11 @@ smoke() {
 
 echo
 echo "== Smoke matrix =="
-smoke "local-fast"  "Write a one-line Python function that returns x+1." "local-fast 1k tokens"
 smoke "local-long"  "List three advantages of static typing." "local-long direct"
-# Use a prompt that is clearly below ROUTE_FAST_MAX and contains no complexity-classifier keywords.
-smoke "hybrid-auto" "What is the capital of France?" "hybrid-auto tiny -> local-fast"
+# Use a prompt that is clearly below ROUTE_LONG_MAX and contains no complexity-classifier keywords.
+smoke "hybrid-auto" "What is the capital of France?" "hybrid-auto tiny -> local-long"
 
-# 7000 lines × ~2.5 tok/line ≈ 17500 tokens > ROUTE_FAST_MAX(16000) → routes to local-long.
-# (5000 lines only reached ~12500 tokens, below the threshold.)
+# 7000 lines × ~2.5 tok/line ≈ 17500 tokens, still well under ROUTE_LONG_MAX(128000) → routes to local-long.
 LONG="$(python3 -c "print('// noise\n' * 7000)")"
 smoke "hybrid-auto" "$LONG"$'\n\nSummarize the above noisy file in one sentence.' "hybrid-auto 17k tokens -> local-long"
 

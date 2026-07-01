@@ -32,7 +32,6 @@ from router.overgeneration_control import (
 @pytest.mark.parametrize(
     "model,expected",
     [
-        ("local-fast",                                  True),
         ("local-long",                                  True),
         ("ollama/qwen3-coder-next:q4_K_M",              True),
         ("openai/mlx-community/Qwen2.5-Coder-7B",       True),
@@ -46,7 +45,6 @@ from router.overgeneration_control import (
         # upstream models, so the over-gen controls must still
         # classify them by their canonical local/remote nature even
         # if the route_by_size hook hasn't stripped the prefix yet.
-        ("gpt-local-fast",                              True),
         ("gpt-local-long",                              True),
         ("gpt-local-agent",                             True),
         ("gpt-claude-code",                             False),
@@ -605,23 +603,6 @@ def test_inject_qwen3_think_safe_on_empty_messages() -> None:
 
 
 # ---- M6b: model-aware think gating -------------------------------------------
-
-def test_model_supports_think_local_fast_qwen3(monkeypatch: Any) -> None:
-    """local-fast is think-capable only when the MLX model is Qwen3."""
-    from router.overgeneration_control import _model_supports_think
-    monkeypatch.setenv("MLX_LOCAL_DIR", "/models/mlx-community_Qwen3-Coder-Next-4bit")
-    monkeypatch.setenv("MLX_REPO", "mlx-community/Qwen3-Coder-Next-4bit")
-    assert _model_supports_think("local-fast") is True
-    assert _model_supports_think("gpt-local-fast") is True
-
-
-def test_model_supports_think_local_fast_non_qwen3(monkeypatch: Any) -> None:
-    """If MLX_LOCAL_DIR drifts to a Qwen2.5 model, /think must NOT fire."""
-    from router.overgeneration_control import _model_supports_think
-    monkeypatch.setenv("MLX_LOCAL_DIR", "/models/mlx-community_Qwen2.5-Coder-7B-Instruct-4bit")
-    monkeypatch.setenv("MLX_REPO", "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit")
-    assert _model_supports_think("local-fast") is False
-
 
 def test_model_supports_think_local_long_uses_ollama_tag(monkeypatch: Any) -> None:
     from router.overgeneration_control import _model_supports_think

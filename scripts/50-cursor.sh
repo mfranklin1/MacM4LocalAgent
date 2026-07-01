@@ -17,7 +17,7 @@ RULE_DIR="$REPO_ROOT/.cursor/rules"
 mkdir -p "$RULE_DIR"
 cat > "$RULE_DIR/hybrid-routing.mdc" <<EOF
 ---
-description: When to use local-fast vs local-long vs claude-code
+description: When to use local-long vs claude-code
 alwaysApply: true
 ---
 
@@ -28,7 +28,6 @@ This workspace runs a hybrid local+cloud LLM setup behind LiteLLM
 
 ## Models exposed
 
-- **local-fast** — MLX, Qwen3-Coder-Next, ≤16k context, ~70 tok/s, free.
 - **local-long** — Ollama + ${KV_CACHE_TYPE} KV cache, ≤${LOCAL_LONG_CTX} ctx, free.
 - **claude-code** — default Claude tier, currently mapped to Opus 4.7 (\$5 in / \$25 out per MTok, 1M context).
 - **claude-haiku-4-5** / **claude-sonnet-4-6** / **claude-opus-4-7** — pinned to a specific Claude model.
@@ -46,8 +45,7 @@ Is the prompt explicitly tagged at the start?
 
 Else, by content:
 ├─ Architectural / multi-file / deep reasoning ──► claude-code
-├─ ≤16k tokens                                   ──► local-fast
-├─ 16k–128k tokens                               ──► local-long
+├─ ≤128k tokens                                  ──► local-long
 └─ >128k tokens                                  ──► claude-code
 \`\`\`
 
@@ -55,7 +53,7 @@ Else, by content:
 
 | Prompt                                              | Tier               | Why                                |
 | --------------------------------------------------- | ------------------ | ---------------------------------- |
-| "Rename \`foo\` to \`bar\` in this file."           | local-fast         | tiny, single-file                  |
+| "Rename \`foo\` to \`bar\` in this file."           | local-long         | tiny, single-file                  |
 | "Summarize this 60k-token codebase dump."           | local-long         | size only, not architectural       |
 | "Refactor the auth subsystem across 12 services."   | claude-code (Opus) | architectural + multi-file         |
 | "[local] Refactor across multiple files."           | local-long         | absolute opt-out wins              |
@@ -143,7 +141,7 @@ cat <<EOF
   2. Toggle "Override OpenAI Base URL" ON
   3. Base URL:  http://127.0.0.1:${LITELLM_PORT}/v1
   4. API Key:   any non-empty string (e.g. "not-needed")
-  5. Add models: local-fast, local-long, claude-code, hybrid-auto
+  5. Add models: local-long, claude-code, hybrid-auto
   6. Pick hybrid-auto as default.
 
   See docs/RUNBOOK-cursor-setup.md for the SSRF / CGNAT background.

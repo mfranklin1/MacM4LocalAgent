@@ -122,7 +122,6 @@ class TestRegistryLoads:
 
     def test_backend_names_present(self, reg_turbo_on):
         names = reg_turbo_on.tier_order()
-        assert "local-fast" in names
         assert "local-long-128k" in names
         assert "local-turbo-256k" in names
         assert "local-turbo-512k" in names
@@ -138,7 +137,6 @@ class TestRegistryLoads:
     def test_tier_order_correct_sequence(self, reg_turbo_on):
         order = reg_turbo_on.tier_order()
         assert order == [
-            "local-fast",
             "local-long-128k",
             "local-turbo-256k",
             "local-turbo-512k",
@@ -150,14 +148,6 @@ class TestRegistryLoads:
 # ---------------------------------------------------------------------------
 
 class TestBackendConfig:
-    def test_local_fast_config(self, reg_turbo_on):
-        cfg = reg_turbo_on.backend("local-fast")
-        assert cfg is not None
-        assert cfg.name == "local-fast"
-        assert cfg.kind == "mlx"
-        # max_context is 16384 from the YAML
-        assert cfg.max_context == 16384
-
     def test_local_long_config(self, reg_turbo_on):
         cfg = reg_turbo_on.backend("local-long-128k")
         assert cfg is not None
@@ -183,12 +173,12 @@ class TestBackendConfig:
 
     def test_config_is_dataclass(self, reg_turbo_on):
         import dataclasses
-        cfg = reg_turbo_on.backend("local-fast")
+        cfg = reg_turbo_on.backend("local-long-128k")
         assert dataclasses.is_dataclass(cfg)
 
-    def test_resident_policy_local_fast(self, reg_turbo_on):
-        cfg = reg_turbo_on.backend("local-fast")
-        assert cfg.resident_policy == "always_on"
+    def test_resident_policy_local_long(self, reg_turbo_on):
+        cfg = reg_turbo_on.backend("local-long-128k")
+        assert cfg.resident_policy == "warm_optional"
 
     def test_resident_policy_turbo(self, reg_turbo_on):
         cfg = reg_turbo_on.backend("local-turbo-256k")
@@ -200,17 +190,8 @@ class TestBackendConfig:
 # ---------------------------------------------------------------------------
 
 class TestChooseBackendTurboOn:
-    def test_8k_tokens_routes_to_local_fast(self, reg_turbo_on):
-        assert reg_turbo_on.choose_backend(8_000) == "local-fast"
-
-    def test_boundary_at_fast_max_still_fast(self, reg_turbo_on):
-        # Exactly at local-fast max_context should still pick local-fast.
-        cfg = reg_turbo_on.backend("local-fast")
-        assert reg_turbo_on.choose_backend(cfg.max_context) == "local-fast"
-
-    def test_just_over_fast_max_routes_to_long(self, reg_turbo_on):
-        cfg = reg_turbo_on.backend("local-fast")
-        assert reg_turbo_on.choose_backend(cfg.max_context + 1) == "local-long-128k"
+    def test_8k_tokens_routes_to_local_long(self, reg_turbo_on):
+        assert reg_turbo_on.choose_backend(8_000) == "local-long-128k"
 
     def test_50k_tokens_routes_to_local_long(self, reg_turbo_on):
         assert reg_turbo_on.choose_backend(50_000) == "local-long-128k"
@@ -225,9 +206,9 @@ class TestChooseBackendTurboOn:
         fallback = reg_turbo_on.fallback_target()
         assert reg_turbo_on.choose_backend(600_000) == fallback
 
-    def test_zero_tokens_routes_to_local_fast(self, reg_turbo_on):
+    def test_zero_tokens_routes_to_local_long(self, reg_turbo_on):
         # Edge case: zero tokens should take the cheapest tier.
-        assert reg_turbo_on.choose_backend(0) == "local-fast"
+        assert reg_turbo_on.choose_backend(0) == "local-long-128k"
 
     def test_exact_turbo_256k_max(self, reg_turbo_on):
         cfg = reg_turbo_on.backend("local-turbo-256k")
@@ -243,8 +224,8 @@ class TestChooseBackendTurboOn:
 # ---------------------------------------------------------------------------
 
 class TestChooseBackendTurboOff:
-    def test_8k_tokens_still_local_fast(self, reg_turbo_off):
-        assert reg_turbo_off.choose_backend(8_000) == "local-fast"
+    def test_8k_tokens_still_local_long(self, reg_turbo_off):
+        assert reg_turbo_off.choose_backend(8_000) == "local-long-128k"
 
     def test_50k_tokens_still_local_long(self, reg_turbo_off):
         assert reg_turbo_off.choose_backend(50_000) == "local-long-128k"
@@ -313,11 +294,11 @@ class TestIsTurboEnabled:
 # ---------------------------------------------------------------------------
 
 class TestTierOrder:
-    def test_tier_order_returns_four_tiers(self, reg_turbo_on):
-        assert len(reg_turbo_on.tier_order()) == 4
+    def test_tier_order_returns_three_tiers(self, reg_turbo_on):
+        assert len(reg_turbo_on.tier_order()) == 3
 
     def test_tier_order_first_is_cheapest(self, reg_turbo_on):
-        assert reg_turbo_on.tier_order()[0] == "local-fast"
+        assert reg_turbo_on.tier_order()[0] == "local-long-128k"
 
     def test_tier_order_last_is_most_expensive(self, reg_turbo_on):
         assert reg_turbo_on.tier_order()[-1] == "local-turbo-512k"

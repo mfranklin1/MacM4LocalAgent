@@ -25,7 +25,6 @@ from router.route_by_size import (
     _UNBOUNDED,
     decide_tier,
     decide_tier_cline,
-    ROUTE_FAST_MAX,
     ROUTE_LONG_MAX,
 )
 
@@ -111,7 +110,7 @@ def test_estimate_tokens_far_from_boundary_uses_heuristic(monkeypatch) -> None:
 
 
 def test_estimate_tokens_near_boundary_uses_tiktoken(monkeypatch) -> None:
-    """Inside the ±20% band around ROUTE_FAST_MAX we re-tokenize. A
+    """Inside the ±20% band around ROUTE_LONG_MAX we re-tokenize. A
     stub encoder returns a known token count; we verify it was used
     instead of the heuristic."""
     from router import route_by_size
@@ -128,8 +127,8 @@ def test_estimate_tokens_near_boundary_uses_tiktoken(monkeypatch) -> None:
     monkeypatch.setattr(route_by_size, "_TIKTOKEN_ENCODER", _StubEncoder())
     monkeypatch.setattr(route_by_size, "_TIKTOKEN_DISABLED", False)
 
-    # Heuristic = 16000 (right on the boundary -> always inside band).
-    msgs = [{"role": "user", "content": "x" * int(16000 * 3.6)}]
+    # Heuristic = ROUTE_LONG_MAX (right on the boundary -> always inside band).
+    msgs = [{"role": "user", "content": "x" * int(ROUTE_LONG_MAX * 3.6)}]
     assert _estimate_tokens(msgs) == 12345
     assert _StubEncoder.called == 1
 
@@ -143,9 +142,9 @@ def test_estimate_tokens_falls_back_when_tiktoken_disabled(monkeypatch) -> None:
     monkeypatch.setattr(route_by_size, "_TIKTOKEN_ENCODER", None)
     monkeypatch.setattr(route_by_size, "_TIKTOKEN_DISABLED", True)
 
-    msgs = [{"role": "user", "content": "x" * int(16000 * 3.6)}]
+    msgs = [{"role": "user", "content": "x" * int(ROUTE_LONG_MAX * 3.6)}]
     # Heuristic value should come through unchanged.
-    assert _estimate_tokens(msgs) == 16000
+    assert _estimate_tokens(msgs) == ROUTE_LONG_MAX
 
 
 def test_estimate_tokens_falls_back_on_tiktoken_exception(monkeypatch) -> None:
@@ -160,24 +159,20 @@ def test_estimate_tokens_falls_back_on_tiktoken_exception(monkeypatch) -> None:
     monkeypatch.setattr(route_by_size, "_TIKTOKEN_ENCODER", _Raiser())
     monkeypatch.setattr(route_by_size, "_TIKTOKEN_DISABLED", False)
 
-    msgs = [{"role": "user", "content": "x" * int(16000 * 3.6)}]
-    assert _estimate_tokens(msgs) == 16000  # heuristic fallback
+    msgs = [{"role": "user", "content": "x" * int(ROUTE_LONG_MAX * 3.6)}]
+    assert _estimate_tokens(msgs) == ROUTE_LONG_MAX  # heuristic fallback
 
 
 def test_near_tier_boundary_band() -> None:
-    """The ±20% band is symmetric in tokens around each tier max."""
+    """The ±20% band is symmetric in tokens around the tier max."""
     from router.route_by_size import (
         _near_tier_boundary,
-        ROUTE_FAST_MAX,
         ROUTE_LONG_MAX,
     )
 
     # Right on the boundary -> inside.
-    assert _near_tier_boundary(ROUTE_FAST_MAX) is True
     assert _near_tier_boundary(ROUTE_LONG_MAX) is True
 
-    # Just outside the fast-band on the low side.
-    assert _near_tier_boundary(int(ROUTE_FAST_MAX * 0.75)) is False
     # Just inside the long-band on the high side.
     assert _near_tier_boundary(int(ROUTE_LONG_MAX * 1.15)) is True
     # Way past the long boundary.
@@ -186,24 +181,22 @@ def test_near_tier_boundary_band() -> None:
 
 # ---- decide_tier --------------------------------------------------------------
 
-def test_decide_tier_routes_small_to_fast() -> None:
+def test_decide_tier_routes_small_to_long() -> None:
     msgs = [{"role": "user", "content": "what does this regex do?"}]
     model, reason, tokens = decide_tier(msgs)
-    assert model == "local-fast"
-    assert tokens <= ROUTE_FAST_MAX
+    assert model == "local-long"
+    assert tokens <= ROUTE_LONG_MAX
 
 
 def test_decide_tier_routes_medium_to_long() -> None:
-    # Heuristic must land clearly above the fast-tier band so the
-    # tiktoken-accurate path doesn't kick in. The ±20% band ends at
-    # ROUTE_FAST_MAX * 1.2, so we aim for ~1.3x to be safely outside
-    # AND still well under ROUTE_LONG_MAX.
-    target_tokens = int(ROUTE_FAST_MAX * 1.3)
+    # Heuristic must land comfortably below the long-tier boundary so the
+    # tiktoken-accurate path doesn't kick in.
+    target_tokens = int(ROUTE_LONG_MAX * 0.5)
     chars = target_tokens * 4  # 4 chars/token heuristic upper bound
     msgs = [{"role": "user", "content": "x" * chars}]
     model, reason, tokens = decide_tier(msgs)
     assert model == "local-long"
-    assert ROUTE_FAST_MAX < tokens <= ROUTE_LONG_MAX
+    assert tokens <= ROUTE_LONG_MAX
 
 
 def test_decide_tier_routes_huge_to_claude() -> None:
@@ -239,7 +232,7 @@ def test_pre_call_rewrites_hybrid_auto(router: SizeBasedRouter) -> None:
     }
     new = asyncio.run(router.async_pre_call_hook(None, None, data, "completion"))
     assert new is not None
-    assert new["model"] in {"local-fast", "local-long", "claude-code"}
+    assert new["model"] in {"local-long", "claude-code"}
     meta = new["metadata"]
     assert meta["route_decision"] == new["model"]
     assert isinstance(meta["route_reason"], str)
@@ -261,7 +254,6 @@ def test_pre_call_does_not_touch_explicit_model(router: SizeBasedRouter) -> None
 @pytest.mark.parametrize(
     "incoming,expected_canonical",
     [
-        ("gpt-local-fast",   "local-fast"),
         ("gpt-local-long",   "local-long"),
         ("gpt-local-agent",  "local-agent"),
         ("gpt-claude-code",  "claude-code"),
@@ -293,7 +285,7 @@ def test_pre_call_strips_gpt_prefix_then_rewrites_hybrid_auto(
     }
     new = asyncio.run(router.async_pre_call_hook(None, None, data, "completion"))
     assert new is not None
-    assert new["model"] in {"local-fast", "local-long", "claude-code"}
+    assert new["model"] in {"local-long", "claude-code"}
     meta = new["metadata"]
     assert meta["route_decision"] == new["model"]
     assert isinstance(meta["route_reason"], str)
@@ -330,7 +322,7 @@ class _FakeResponse:
 def test_log_success_event_records_local(router: SizeBasedRouter, tmp_db) -> None:
     start = time.time()
     router.log_success_event(
-        kwargs={"model": "local-fast", "metadata": {"route_reason": "tokens 100 <= 16000"}},
+        kwargs={"model": "local-long", "metadata": {"route_reason": "tokens 100 <= 128000"}},
         response_obj=_FakeResponse(100, 50),
         start_time=start,
         end_time=start + 0.3,
@@ -338,7 +330,7 @@ def test_log_success_event_records_local(router: SizeBasedRouter, tmp_db) -> Non
     rows = list(router._conn.execute("SELECT * FROM requests"))
     assert len(rows) == 1
     r = dict(zip([d[0] for d in router._conn.execute("SELECT * FROM requests").description], rows[0]))
-    assert r["tier"] == "local-fast"
+    assert r["tier"] == "local-long"
     assert r["actual_cost"] == 0.0
     # shadow_cost = 100*3e-6 + 50*15e-6 = 0.0003 + 0.00075 = 0.00105
     assert r["shadow_cost"] == pytest.approx(0.00105, rel=1e-6)
@@ -388,7 +380,7 @@ def test_log_success_event_top_metadata_takes_priority_when_set(
     start = time.time()
     router.log_success_event(
         kwargs={
-            "model": "local-fast",
+            "model": "local-agent",
             "metadata": {"route_reason": "TOP-LEVEL"},
             "litellm_params": {"metadata": {"route_reason": "NESTED"}},
         },
@@ -397,7 +389,7 @@ def test_log_success_event_top_metadata_takes_priority_when_set(
         end_time=start + 0.1,
     )
     row = router._conn.execute(
-        "SELECT route_reason FROM requests WHERE model='local-fast'"
+        "SELECT route_reason FROM requests WHERE model='local-agent'"
     ).fetchone()
     assert row is not None
     assert row[0] == "NESTED"
@@ -1072,8 +1064,8 @@ def test_pre_call_non_cline_traffic_uses_legacy_routing() -> None:
     }
     new = asyncio.run(router.async_pre_call_hook(None, None, data, "completion"))
     assert new is not None
-    # Tiny non-Cline request -> local-fast (legacy path).
-    assert new["model"] == "local-fast"
+    # Tiny non-Cline request -> local-long (legacy path).
+    assert new["model"] == "local-long"
     # And the reason should NOT have the cline-mode prefix.
     assert "cline-mode" not in new["metadata"]["route_reason"]
 
@@ -1209,9 +1201,9 @@ def test_log_success_persists_null_task_id_for_non_cline(
     start = time.time()
     router.log_success_event(
         kwargs={
-            "model": "local-fast",
+            "model": "local-long",
             "litellm_params": {
-                "metadata": {"route_reason": "tokens 10 <= 16000"},
+                "metadata": {"route_reason": "tokens 10 <= 128000"},
             },
         },
         response_obj=_FakeResponse(10, 5),
@@ -1219,7 +1211,7 @@ def test_log_success_persists_null_task_id_for_non_cline(
         end_time=start + 0.1,
     )
     row = router._conn.execute(
-        "SELECT task_id, task_text FROM requests WHERE model='local-fast'"
+        "SELECT task_id, task_text FROM requests WHERE model='local-long'"
     ).fetchone()
     assert row is not None
     assert row[0] is None
@@ -1366,7 +1358,7 @@ def test_decide_tier_legacy_haiku_tag_routes_to_haiku() -> None:
 
 
 def test_decide_tier_legacy_opus_tag_beats_token_count_default() -> None:
-    """Even for a tiny prompt that would normally route to local-fast,
+    """Even for a tiny prompt that would normally route to local-long,
     [opus] forces the upgrade."""
     msgs = [{"role": "user", "content": "[opus] hi"}]
     tier, _, _ = decide_tier(msgs)

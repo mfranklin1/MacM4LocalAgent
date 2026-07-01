@@ -41,7 +41,6 @@ ENDPOINTS: list[dict[str, Any]] = [
     {"key": "ollama",       "name": "Ollama",        "port": 11434, "path": "/api/version"},
     {"key": "litellm",      "name": "LiteLLM proxy", "port": 4000,  "path": "/health"},
     {"key": "claude_proxy", "name": "Claude proxy",  "port": 4002,  "path": "/health"},
-    {"key": "mlx",          "name": "MLX server",    "port": 8081,  "path": "/health"},
 ]
 
 

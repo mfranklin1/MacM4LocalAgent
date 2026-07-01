@@ -6,7 +6,7 @@ REPO_ROOT := $(shell pwd)
 SCRIPTS := $(REPO_ROOT)/scripts
 LAUNCHD_DIR := $(REPO_ROOT)/launchd
 LAUNCH_AGENTS := $(HOME)/Library/LaunchAgents
-PLISTS := com.local.ollama com.local.mlx com.local.litellm com.local.dashboard com.local.ollama-warm com.local.watchdog com.local.claude-proxy
+PLISTS := com.local.ollama com.local.litellm com.local.dashboard com.local.ollama-warm com.local.watchdog com.local.claude-proxy
 
 .PHONY: help detect install reconfigure start stop restart status dashboard monitor verify watchdog report compare clean nuke test test-py test-sh lint finalize downloads downloads-watch wait-and-finalize resume-ollama bench bench-local bench-claude bench-cursor bench-report bench-pull-spend turboquant-status turboquant-upgrade turboquant-watch turboquant-experimental-build turboquant-experimental-serve turboquant-experimental-stop turboquant-experimental-status turboquant-experimental-ab turboquant-experimental-nuke perf perf-short perf-stress perf-prefix perf-prefix-cold check-pricing cline warm offline online offline-status worktree worktree-rm worktree-sync worktree-list backend-status backend-stop-large turbo-install turbo-enable turbo-disable turbo-status turbo-start-256 turbo-start-512 turbo-verify turbo-stop turbo-bench janitor-enable janitor-disable janitor-status janitor-show-ledger janitor-show-active-context janitor-reset janitor-run janitor-bench context-compression-install context-compression-enable context-compression-disable context-compression-status context-compression-bench headroom-verify upgrade-to-q8 TURBO_ENABLED CONTEXT_JANITOR_ENABLED TURBO_MODEL_LOCAL_DIR
 
@@ -26,14 +26,13 @@ reconfigure: ## Re-render LiteLLM config + restart LiteLLM (no model downloads)
 install: detect ## Install all components (idempotent)
 	@bash $(SCRIPTS)/10-brew.sh
 	@bash $(SCRIPTS)/20-ollama.sh
-	@bash $(SCRIPTS)/30-mlx.sh
 	@bash $(SCRIPTS)/40-litellm.sh
 	@bash $(SCRIPTS)/60-dashboard.sh
 	@bash $(SCRIPTS)/50-cursor.sh
 	@echo ""
 	@echo "Install complete. Next: \`make start\` then \`make verify\`."
 
-downloads: ## One-shot: are the Ollama + MLX background pulls done?
+downloads: ## One-shot: is the Ollama background pull done?
 	@bash $(SCRIPTS)/check-downloads.sh || true
 
 resume-ollama: ## Foreground: keep retrying `ollama pull $$OLLAMA_TAG` past TCP resets
@@ -67,7 +66,7 @@ finalize: ## Re-render plists with the post-download values, then start everythi
 	@echo ""
 	@echo "Finalized. Run \`make verify\` once services have warmed up."
 
-start: ## Load launchd plists (Ollama, MLX, LiteLLM, dashboard)
+start: ## Load launchd plists (Ollama, LiteLLM, dashboard)
 	@mkdir -p $(LAUNCH_AGENTS)
 	@for p in $(PLISTS); do \
 	  src="$(LAUNCHD_DIR)/$$p.rendered.plist"; \
@@ -92,7 +91,7 @@ restart: stop start ## Restart all services
 status: ## Show running ports
 	@echo "Port  Service        Status"
 	@echo "----  -------------  ------"
-	@for entry in "11434 ollama" "8081 mlx" "4000 litellm" "4001 dashboard" "4002 claude-proxy"; do \
+	@for entry in "11434 ollama" "4000 litellm" "4001 dashboard" "4002 claude-proxy"; do \
 	  port="$${entry%% *}"; name="$${entry##* }"; \
 	  if lsof -nP -iTCP:$$port -sTCP:LISTEN >/dev/null 2>&1; then \
 	    echo "$$port  $$name        UP"; \

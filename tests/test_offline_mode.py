@@ -350,11 +350,11 @@ def test_decide_tier_explicit_opus_tag_downgrades_when_offline(
 def test_decide_tier_local_path_unchanged_when_offline(
     force_offline: None,
 ) -> None:
-    """Small + non-complex prompts route to local-fast regardless
+    """Small + non-complex prompts route to local-long regardless
     of offline state -- the network has no bearing on a local call."""
     msgs = [{"role": "user", "content": "rename foo to bar"}]
     model, _, _ = decide_tier(msgs)
-    assert model == "local-fast"
+    assert model == "local-long"
 
 
 # ---- decide_tier_cline short-circuit ---------------------------------------
