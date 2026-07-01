@@ -1,0 +1,16 @@
+{% extends "_layout.html" %}
+{% block title %}Cline Monitor – MacM4 Dashboard{% endblock %}
+{% block content %}
+  <h1>Cline Session Monitor</h1>
+  <p class="muted">
+    Live routing, context subsystems, and endpoint health — polled every 3 s.
+    Data from cost.db, gortex daemon, and VS Code extension storage.
+  </p>
+
+  <div id="monitor-live"
+       hx-get="/monitor/_live"
+       hx-trigger="load, every 3s"
+       hx-swap="innerHTML">
+    <p class="muted">loading…</p>
+  </div>
+{% endblock %}
