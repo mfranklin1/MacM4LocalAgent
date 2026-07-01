@@ -21,5 +21,13 @@
   </array>
   <key>StandardOutPath</key><string>@@REPO_ROOT@@/.logs/litellm.out.log</string>
   <key>StandardErrorPath</key><string>@@REPO_ROOT@@/.logs/litellm.err.log</string>
+  <key>SoftResourceLimits</key>
+  <dict>
+    <key>NumberOfFiles</key><integer>4096</integer>
+  </dict>
+  <key>HardResourceLimits</key>
+  <dict>
+    <key>NumberOfFiles</key><integer>4096</integer>
+  </dict>
 </dict>
 </plist>
