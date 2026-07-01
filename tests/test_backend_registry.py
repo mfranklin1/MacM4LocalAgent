@@ -54,20 +54,33 @@ def _reset_module():
     sys.modules.pop("router.backend_registry", None)
 
 
+# Env vars that override a backend's max_context (see max_context_env in
+# config/backend-registry.yaml). Cleared in reg_turbo_on/reg_turbo_off so
+# routing-boundary tests are hermetic -- see those fixtures for why.
+_MAX_CONTEXT_ENV_KEYS = ("LOCAL_LONG_CTX",)
+
+
 @pytest.fixture()
 def reg_turbo_on(monkeypatch, tmp_path):
     """Registry loaded with TURBO_ENABLED=1.
 
-    Points env_path at a nonexistent file so max_context values come
+    Points env_path at a nonexistent file AND clears any already-set
+    max_context_env vars (e.g. LOCAL_LONG_CTX) so max_context values come
     solely from the static YAML defaults (131072 for local-long-128k,
-    etc.), not from the host's real hardware-detected
-    config/detected.env. The module singleton (`mod.registry`) reads
-    the real file, which varies by machine -- e.g. a resource-constrained
-    CI runner detects a smaller LOCAL_LONG_CTX than a developer's own
-    Mac, which previously made the 50k-token routing tests flaky
-    across environments.
+    etc.) -- not from the host's real hardware-detected config/detected.env,
+    which varies runner-to-runner. Both guards are needed:
+    BackendRegistry falls back from env_path's file to the real
+    os.environ, and other modules imported during the same pytest session
+    (e.g. claude_proxy/server.py, which runs os.environ.setdefault(key,
+    val) for every key in config/detected.env at import time) can leak
+    LOCAL_LONG_CTX into the real environment before this fixture runs --
+    this previously made the test pass in isolation but fail as part of
+    the full suite (and on CI, where hardware detection yields a smaller
+    value).
     """
     monkeypatch.setenv("TURBO_ENABLED", "1")
+    for key in _MAX_CONTEXT_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
     mod = _import_registry()
     return mod.BackendRegistry(env_path=tmp_path / "nonexistent.env")
 
@@ -75,8 +88,11 @@ def reg_turbo_on(monkeypatch, tmp_path):
 @pytest.fixture()
 def reg_turbo_off(monkeypatch, tmp_path):
     """Registry loaded with TURBO_ENABLED=0. See reg_turbo_on for why
-    env_path is pinned to a nonexistent file."""
+    env_path is pinned to a nonexistent file and max_context_env keys
+    are cleared."""
     monkeypatch.setenv("TURBO_ENABLED", "0")
+    for key in _MAX_CONTEXT_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
     mod = _import_registry()
     return mod.BackendRegistry(env_path=tmp_path / "nonexistent.env")
 
