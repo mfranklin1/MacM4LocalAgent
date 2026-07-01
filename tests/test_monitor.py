@@ -50,7 +50,7 @@ def _minimal_monitor_data() -> dict[str, Any]:
         ],
         "gortex": {
             "running": True, "pid": 1, "uptime": "1h", "state": "ready",
-            "mcp_sessions": 2, "cline_sessions": 1, "raw": "",
+            "mcp_sessions": 2, "cline_sessions": 1, "detail_ok": True, "raw": "",
         },
         "janitor": {
             "enabled": True, "headroom_enabled": True,
@@ -199,6 +199,7 @@ def test_gortex_status_parses_all_fields(tmp_path: pathlib.Path, monkeypatch: py
     assert g["state"] == "ready"
     assert g["mcp_sessions"] == 3
     assert g["cline_sessions"] == 1
+    assert g["detail_ok"] is True
 
 
 def test_gortex_status_no_cline_sessions(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -242,7 +243,8 @@ def test_gortex_status_running_survives_detail_call_timeout(
 ) -> None:
     """A live-but-backlogged daemon whose `daemon status` RPC times out must
     still report running=True — this was the actual production bug: a slow
-    detail call was mistaken for the daemon being down."""
+    detail call was mistaken for the daemon being down. detail_ok must be
+    False so callers know the (absent) session counts aren't confirmed."""
     _live_pidfile(tmp_path, monkeypatch, os.getpid())
 
     def _boom(*a: Any, **kw: Any) -> None:
@@ -252,6 +254,7 @@ def test_gortex_status_running_survives_detail_call_timeout(
     assert g["running"] is True
     assert g["pid"] == os.getpid()
     assert g["state"] is None
+    assert g["detail_ok"] is False
 
 
 def test_gortex_status_empty_stdout_leaves_detail_unavailable(
@@ -262,6 +265,32 @@ def test_gortex_status_empty_stdout_leaves_detail_unavailable(
     g = mon.gortex_mcp_status()
     assert g["running"] is True
     assert g["state"] is None
+    assert g["detail_ok"] is False
+
+
+def test_gortex_status_timeout_preserves_last_known_good_sessions(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A transient timeout must not wipe out a previously confirmed session
+    count -- this was the second production bug: one slow poll flashed
+    "0 Cline sessions" (reading as a disconnect) even though Cline's actual
+    MCP connection never dropped."""
+    _live_pidfile(tmp_path, monkeypatch, os.getpid())
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: _make_completed(0, _SAMPLE_STATUS))
+    good = mon.gortex_mcp_status()
+    assert good["cline_sessions"] == 1
+    assert good["detail_ok"] is True
+
+    monkeypatch.setattr(mon, "_gortex_detail_cached_at", 0.0)  # force the next call to re-fetch
+
+    def _boom(*a: Any, **kw: Any) -> None:
+        raise subprocess.TimeoutExpired(cmd="gortex", timeout=mon.GORTEX_DETAIL_TIMEOUT_SEC)
+    monkeypatch.setattr(subprocess, "run", _boom)
+    stale = mon.gortex_mcp_status()
+    assert stale["running"] is True
+    assert stale["detail_ok"] is False
+    assert stale["cline_sessions"] == 1  # last known-good value, not reset to 0
+    assert stale["mcp_sessions"] == 3
 
 
 def test_gortex_status_detail_cached_within_ttl(
@@ -542,7 +571,24 @@ def test_monitor_live_shows_gortex_disconnected_anomaly(client: TestClient, monk
     monkeypatch.setattr(mon, "monitor_data", _disconnected)
     r = client.get("/monitor/_live")
     assert r.status_code == 200
-    assert "GORTEX" in r.text  # anomaly title appears
+    assert "GORTEX MCP DISCONNECTED" in r.text
+
+
+def test_monitor_live_shows_gortex_unknown_not_disconnected_when_detail_unavailable(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A daemon that's up but hasn't answered `daemon status` yet (detail_ok=False,
+    so cline_sessions defaults to 0) must render as "status unknown", never as the
+    "disconnected" anomaly -- that was the actual production bug."""
+    def _unknown() -> dict[str, Any]:
+        d = _minimal_monitor_data()
+        d["gortex"] = {**d["gortex"], "cline_sessions": 0, "detail_ok": False}
+        return d
+    monkeypatch.setattr(mon, "monitor_data", _unknown)
+    r = client.get("/monitor/_live")
+    assert r.status_code == 200
+    assert "GORTEX SESSION STATUS UNKNOWN" in r.text
+    assert "GORTEX MCP DISCONNECTED" not in r.text
 
 
 def test_monitor_live_shows_maxed_output_anomaly(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
