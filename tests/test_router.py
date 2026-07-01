@@ -13,6 +13,7 @@ from router.route_by_size import (
     SizeBasedRouter,
     _check_sticky,
     _estimate_tokens,
+    _heuristic_tokens_from_chars,
     _extract_model_override,
     _extract_user_task,
     _flat_prompt,
@@ -142,9 +143,14 @@ def test_estimate_tokens_falls_back_when_tiktoken_disabled(monkeypatch) -> None:
     monkeypatch.setattr(route_by_size, "_TIKTOKEN_ENCODER", None)
     monkeypatch.setattr(route_by_size, "_TIKTOKEN_DISABLED", True)
 
-    msgs = [{"role": "user", "content": "x" * int(ROUTE_LONG_MAX * 3.6)}]
-    # Heuristic value should come through unchanged.
-    assert _estimate_tokens(msgs) == ROUTE_LONG_MAX
+    # Sized right at the boundary so _near_tier_boundary() is true; with
+    # tiktoken disabled the heuristic value must come through unchanged.
+    # Compare against the heuristic helper (not ROUTE_LONG_MAX) so the
+    # assertion is robust to float truncation in the chars->tokens round
+    # trip when ROUTE_LONG_MAX isn't a clean multiple of 3.6.
+    chars = int(ROUTE_LONG_MAX * 3.6)
+    msgs = [{"role": "user", "content": "x" * chars}]
+    assert _estimate_tokens(msgs) == _heuristic_tokens_from_chars(chars)
 
 
 def test_estimate_tokens_falls_back_on_tiktoken_exception(monkeypatch) -> None:
@@ -159,8 +165,9 @@ def test_estimate_tokens_falls_back_on_tiktoken_exception(monkeypatch) -> None:
     monkeypatch.setattr(route_by_size, "_TIKTOKEN_ENCODER", _Raiser())
     monkeypatch.setattr(route_by_size, "_TIKTOKEN_DISABLED", False)
 
-    msgs = [{"role": "user", "content": "x" * int(ROUTE_LONG_MAX * 3.6)}]
-    assert _estimate_tokens(msgs) == ROUTE_LONG_MAX  # heuristic fallback
+    chars = int(ROUTE_LONG_MAX * 3.6)
+    msgs = [{"role": "user", "content": "x" * chars}]
+    assert _estimate_tokens(msgs) == _heuristic_tokens_from_chars(chars)  # heuristic fallback
 
 
 def test_near_tier_boundary_band() -> None:
