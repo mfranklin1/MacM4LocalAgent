@@ -7,6 +7,7 @@ Organisation:
 
 from __future__ import annotations
 
+import os
 import pathlib
 import subprocess
 import time
@@ -128,6 +129,12 @@ def test_probe_http_never_raises_on_garbage_url() -> None:
 
 # ---------------------------------------------------------------------------
 # gortex_mcp_status()
+#
+# `running` comes solely from the pidfile + kill(pid, 0) liveness check
+# (mon.GORTEX_PID_FILE); the `daemon status` subprocess only ever supplies
+# the supplementary uptime/state/session fields, cached and rate-limited to
+# GORTEX_DETAIL_TTL_SEC. The `_reset_gortex_cache` fixture forces that cache
+# to always miss so each test observes its own monkeypatched subprocess call.
 # ---------------------------------------------------------------------------
 
 _SAMPLE_STATUS = (
@@ -141,18 +148,61 @@ def _make_completed(returncode: int, stdout: str, stderr: str = "") -> subproces
     return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
 
 
-def test_gortex_status_parses_all_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.fixture(autouse=True)
+def _reset_gortex_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(mon, "_gortex_detail_cache", dict(mon._GORTEX_DETAIL_DEFAULT))
+    monkeypatch.setattr(mon, "_gortex_detail_cached_at", 0.0)
+
+
+def _live_pidfile(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, pid: int) -> None:
+    p = tmp_path / "daemon.pid"
+    p.write_text(str(pid))
+    monkeypatch.setattr(mon, "GORTEX_PID_FILE", p)
+
+
+def _missing_pidfile(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(mon, "GORTEX_PID_FILE", tmp_path / "no-such.pid")
+
+
+def test_pid_alive_true_for_own_process() -> None:
+    assert mon._pid_alive(os.getpid()) is True
+
+
+def test_pid_alive_false_for_reaped_process() -> None:
+    proc = subprocess.Popen(["true"])
+    proc.wait()
+    assert mon._pid_alive(proc.pid) is False
+
+
+def test_gortex_liveness_true_when_pidfile_names_live_process(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _live_pidfile(tmp_path, monkeypatch, os.getpid())
+    live = mon.gortex_liveness()
+    assert live == {"running": True, "pid": os.getpid()}
+
+
+def test_gortex_liveness_false_when_pidfile_missing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _missing_pidfile(tmp_path, monkeypatch)
+    assert mon.gortex_liveness() == {"running": False, "pid": None}
+
+
+def test_gortex_status_parses_all_fields(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _live_pidfile(tmp_path, monkeypatch, os.getpid())
     monkeypatch.setattr(subprocess, "run", lambda *a, **kw: _make_completed(0, _SAMPLE_STATUS))
     g = mon.gortex_mcp_status()
     assert g["running"] is True
-    assert g["pid"] == 34646
+    assert g["pid"] == os.getpid()
     assert g["uptime"] == "14h22m"
     assert g["state"] == "ready"
     assert g["mcp_sessions"] == 3
     assert g["cline_sessions"] == 1
 
 
-def test_gortex_status_no_cline_sessions(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_gortex_status_no_cline_sessions(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _live_pidfile(tmp_path, monkeypatch, os.getpid())
     raw = (
         "pid: 1, uptime: 1m, state: ready\n"
         "2 MCP sessions: [cli:claude-code(1m), cli:claude-code(2m)]"
@@ -163,7 +213,9 @@ def test_gortex_status_no_cline_sessions(monkeypatch: pytest.MonkeyPatch) -> Non
     assert g["mcp_sessions"] == 2
 
 
-def test_gortex_status_daemon_not_running(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_gortex_status_daemon_not_running(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No pidfile => not running, regardless of what the CLI would say."""
+    _missing_pidfile(tmp_path, monkeypatch)
     monkeypatch.setattr(subprocess, "run",
                         lambda *a, **kw: _make_completed(1, "", "daemon not running"))
     g = mon.gortex_mcp_status()
@@ -172,25 +224,73 @@ def test_gortex_status_daemon_not_running(monkeypatch: pytest.MonkeyPatch) -> No
     assert g["mcp_sessions"] == 0
 
 
-def test_gortex_status_never_raises_on_missing_binary(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_gortex_status_never_raises_on_missing_binary(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _live_pidfile(tmp_path, monkeypatch, os.getpid())
+
     def _boom(*a: Any, **kw: Any) -> None:
         raise FileNotFoundError("gortex not found")
     monkeypatch.setattr(subprocess, "run", _boom)
     g = mon.gortex_mcp_status()
-    assert g["running"] is False
+    assert g["running"] is True  # liveness is unaffected by the CLI being unusable
     assert isinstance(g["raw"], str)
 
 
-def test_gortex_status_never_raises_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_gortex_status_running_survives_detail_call_timeout(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A live-but-backlogged daemon whose `daemon status` RPC times out must
+    still report running=True — this was the actual production bug: a slow
+    detail call was mistaken for the daemon being down."""
+    _live_pidfile(tmp_path, monkeypatch, os.getpid())
+
     def _boom(*a: Any, **kw: Any) -> None:
-        raise subprocess.TimeoutExpired(cmd="gortex", timeout=3)
+        raise subprocess.TimeoutExpired(cmd="gortex", timeout=mon.GORTEX_DETAIL_TIMEOUT_SEC)
     monkeypatch.setattr(subprocess, "run", _boom)
     g = mon.gortex_mcp_status()
-    assert g["running"] is False
+    assert g["running"] is True
+    assert g["pid"] == os.getpid()
+    assert g["state"] is None
 
 
-def test_gortex_status_empty_stdout_treated_as_down(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_gortex_status_empty_stdout_leaves_detail_unavailable(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _live_pidfile(tmp_path, monkeypatch, os.getpid())
     monkeypatch.setattr(subprocess, "run", lambda *a, **kw: _make_completed(0, ""))
+    g = mon.gortex_mcp_status()
+    assert g["running"] is True
+    assert g["state"] is None
+
+
+def test_gortex_status_detail_cached_within_ttl(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The `daemon status` subprocess must not be re-invoked on every call
+    -- only once per GORTEX_DETAIL_TTL_SEC. This is the fix for the
+    dashboard hammering the daemon every 3 s."""
+    _live_pidfile(tmp_path, monkeypatch, os.getpid())
+    monkeypatch.setattr(mon, "_gortex_detail_cached_at", time.time())
+    calls: list[Any] = []
+
+    def _spy(*a: Any, **kw: Any) -> subprocess.CompletedProcess:
+        calls.append(a)
+        return _make_completed(0, _SAMPLE_STATUS)
+    monkeypatch.setattr(subprocess, "run", _spy)
+    mon.gortex_mcp_status()
+    mon.gortex_mcp_status()
+    assert len(calls) == 0  # cache is fresh; subprocess never runs
+
+
+def test_gortex_status_not_running_never_calls_subprocess(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _missing_pidfile(tmp_path, monkeypatch)
+
+    def _boom(*a: Any, **kw: Any) -> None:
+        raise AssertionError("subprocess.run should not be called when the daemon is down")
+    monkeypatch.setattr(subprocess, "run", _boom)
     g = mon.gortex_mcp_status()
     assert g["running"] is False
 
@@ -390,6 +490,7 @@ def test_monitor_data_never_raises_when_all_deps_fail(monkeypatch: pytest.Monkey
     """
     monkeypatch.setattr(mon, "_probe_http", lambda url, timeout=0.5: (False, None))
     monkeypatch.setattr(subprocess, "run", lambda *a, **kw: (_ for _ in ()).throw(OSError("no bin")))
+    monkeypatch.setattr(mon, "GORTEX_PID_FILE", tmp_path / "no-such.pid")
     monkeypatch.setattr(mon, "JANITOR_BASE", tmp_path / "nonexistent", raising=True)
     from cost import ingest as _ingest
     monkeypatch.setattr(_ingest, "DB_PATH", pathlib.Path("/nonexistent/db.db"), raising=True)
@@ -500,9 +601,11 @@ def test_api_monitor_health_rows_have_required_shape(client: TestClient, monkeyp
 
 
 def test_api_monitor_still_200_when_gortex_binary_missing(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_db: pathlib.Path
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_db: pathlib.Path, tmp_path: pathlib.Path,
 ) -> None:
     """Route must return 200 even when `gortex` binary is absent."""
+    monkeypatch.setattr(mon, "GORTEX_PID_FILE", tmp_path / "no-such.pid")
+
     def _boom(*a: Any, **kw: Any) -> None:
         raise FileNotFoundError("gortex not found")
     monkeypatch.setattr(subprocess, "run", _boom)
