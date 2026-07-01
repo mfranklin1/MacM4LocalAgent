@@ -81,6 +81,9 @@
 {% if not data.gortex.running %}
   {% set _ = anomalies.append({"kind":"crit","title":"GORTEX DAEMON NOT RUNNING",
     "desc":"Run `gortex daemon start --detach` to bring it up. Cline is using file reads instead of graph queries."}) %}
+{% elif not data.gortex.detail_ok %}
+  {% set _ = anomalies.append({"kind":"warn","title":"GORTEX SESSION STATUS UNKNOWN",
+    "desc":"Daemon is up but `daemon status` isn't answering yet (daemon busy) — session counts below may be stale. Not necessarily a disconnect."}) %}
 {% elif data.gortex.cline_sessions == 0 %}
   {% set _ = anomalies.append({"kind":"crit","title":"GORTEX MCP DISCONNECTED",
     "desc":"Daemon up (" ~ data.gortex.mcp_sessions ~ " total sessions) but no Cline sessions. Reconnect in Cline MCP settings."}) %}

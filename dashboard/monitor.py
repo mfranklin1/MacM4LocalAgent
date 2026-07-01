@@ -96,10 +96,15 @@ def health_checks() -> list[dict[str, Any]]:
 # ever blocking a poll.
 
 GORTEX_DETAIL_TTL_SEC = 30.0
-GORTEX_DETAIL_TIMEOUT_SEC = 1.5
+GORTEX_DETAIL_TIMEOUT_SEC = 3.0
 
+# detail_ok distinguishes "we asked and got a real answer" from "we don't
+# know" — a busy daemon that just times out on `daemon status` must not be
+# rendered the same as a daemon that positively reported 0 sessions. Without
+# this, a transient slow response gets misread as "Cline disconnected."
 _GORTEX_DETAIL_DEFAULT: dict[str, Any] = {
-    "uptime": None, "state": None, "mcp_sessions": 0, "cline_sessions": 0, "raw": "",
+    "uptime": None, "state": None, "mcp_sessions": 0, "cline_sessions": 0,
+    "raw": "", "detail_ok": False,
 }
 _gortex_detail_cache: dict[str, Any] = dict(_GORTEX_DETAIL_DEFAULT)
 _gortex_detail_cached_at: float = 0.0
@@ -135,7 +140,7 @@ def gortex_liveness() -> dict[str, Any]:
 
 def _parse_gortex_status(raw: str) -> dict[str, Any]:
     """Parse the structured fields out of `gortex daemon status` stdout."""
-    info: dict[str, Any] = dict(_GORTEX_DETAIL_DEFAULT)
+    info: dict[str, Any] = {**_GORTEX_DETAIL_DEFAULT, "detail_ok": True}
 
     m = re.search(r"uptime:\s*([^,\n]+)", raw)
     if m:
@@ -156,7 +161,9 @@ def _parse_gortex_status(raw: str) -> dict[str, Any]:
 
 def _fetch_gortex_detail(timeout: float = GORTEX_DETAIL_TIMEOUT_SEC) -> dict[str, Any]:
     """Run `gortex daemon status` once and parse it. Only ever called from
-    the rate-limited cache refresh below — never on every poll."""
+    the rate-limited cache refresh below — never on every poll. `detail_ok`
+    is False on any failure so the caller can tell "confirmed" from
+    "unknown" instead of reading the zeroed-out fields as a real answer."""
     try:
         result = subprocess.run(
             [str(GORTEX_BIN), "daemon", "status"],
@@ -164,19 +171,29 @@ def _fetch_gortex_detail(timeout: float = GORTEX_DETAIL_TIMEOUT_SEC) -> dict[str
         )
         raw = result.stdout.strip()
         if result.returncode != 0 or not raw:
-            return {**_GORTEX_DETAIL_DEFAULT, "raw": result.stderr.strip() or raw}
+            return {"detail_ok": False, "raw": result.stderr.strip() or raw}
         return _parse_gortex_status(raw)
     except Exception as exc:
-        return {**_GORTEX_DETAIL_DEFAULT, "raw": str(exc)}
+        return {"detail_ok": False, "raw": str(exc)}
 
 
 def _refresh_gortex_detail_cache(force: bool = False) -> dict[str, Any]:
-    """Refresh the cached detail fields at most once per GORTEX_DETAIL_TTL_SEC."""
+    """Refresh the cached detail fields at most once per GORTEX_DETAIL_TTL_SEC.
+
+    A failed/timed-out refresh only updates `detail_ok`/`raw` — it must not
+    clobber the last known-good uptime/state/session counts, otherwise one
+    slow poll flashes "0 sessions" even though nothing about Cline's actual
+    connection changed.
+    """
     global _gortex_detail_cache, _gortex_detail_cached_at
     now = time.time()
     if force or (now - _gortex_detail_cached_at) >= GORTEX_DETAIL_TTL_SEC:
-        _gortex_detail_cache = _fetch_gortex_detail()
+        result = _fetch_gortex_detail()
         _gortex_detail_cached_at = now
+        if result.get("detail_ok"):
+            _gortex_detail_cache = result
+        else:
+            _gortex_detail_cache = {**_gortex_detail_cache, "detail_ok": False, "raw": result.get("raw", "")}
     return _gortex_detail_cache
 
 
@@ -190,6 +207,10 @@ def gortex_mcp_status() -> dict[str, Any]:
       state         str | None    ("ready", "warmup", …), cached
       mcp_sessions  int           total MCP sessions in daemon, cached
       cline_sessions int          sessions whose description contains "cline", cached
+      detail_ok     bool          True iff mcp_sessions/cline_sessions are a confirmed
+                                   answer from `daemon status`, not a stale/default 0 —
+                                   callers must not treat detail_ok=False + cline_sessions=0
+                                   as "confirmed disconnected"
       raw           str           raw stdout/error for debugging, cached
     Never raises.
     """
