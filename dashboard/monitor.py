@@ -39,7 +39,13 @@ GORTEX_PID_FILE: pathlib.Path = pathlib.Path.home() / ".gortex" / "cache" / "dae
 # it's always reachable if we're generating this response.
 ENDPOINTS: list[dict[str, Any]] = [
     {"key": "ollama",       "name": "Ollama",        "port": 11434, "path": "/api/version"},
-    {"key": "litellm",      "name": "LiteLLM proxy", "port": 4000,  "path": "/health"},
+    # LiteLLM's plain `/health` fires a live test completion against every
+    # configured model deployment (all local models AND all Claude aliases)
+    # on every single call. Polled every 3s by /monitor/_live, that turns an
+    # idle browser tab into a continuous real-money Claude-spend generator
+    # and saturates the single-threaded Ollama backend. `/health/liveliness`
+    # is the lightweight liveness probe with no backend fan-out.
+    {"key": "litellm",      "name": "LiteLLM proxy", "port": 4000,  "path": "/health/liveliness"},
     {"key": "claude_proxy", "name": "Claude proxy",  "port": 4002,  "path": "/health"},
 ]
 
