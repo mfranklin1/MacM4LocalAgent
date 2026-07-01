@@ -8,18 +8,14 @@ CONFIG_DIR="$REPO_ROOT/config"
 OUT="$CONFIG_DIR/detected.env"
 mkdir -p "$CONFIG_DIR"
 
-# Preserve fields that downstream scripts (30-mlx.sh, 20-ollama.sh) write
-# back into detected.env so re-running `make detect` doesn't unpin the
+# Preserve fields that downstream scripts (20-ollama.sh) write back into
+# detected.env so re-running `make detect` doesn't unpin the
 # already-installed model tags.
 PREV_OLLAMA_TAG=""
-PREV_MLX_REPO=""
-PREV_MLX_LOCAL_DIR=""
 if [[ -f "$OUT" ]]; then
   # shellcheck disable=SC1090
   source "$OUT" 2>/dev/null || true
   PREV_OLLAMA_TAG="${OLLAMA_TAG:-}"
-  PREV_MLX_REPO="${MLX_REPO:-}"
-  PREV_MLX_LOCAL_DIR="${MLX_LOCAL_DIR:-}"
 fi
 
 log() { printf "\033[1;34m[detect]\033[0m %s\n" "$*"; }
@@ -52,17 +48,14 @@ DISK_FREE_GB="$(df -g / | awk 'NR==2 {print $4}')"
 # 96 GB threshold (not 128 GB): accounts for ~30 GB OS + system overhead on M-series 128 GB machines.
 if (( RAM_GB >= 96 )); then
   QUANT_TIER="q8"
-  MLX_QUANT="8bit"
   OLLAMA_TAG_DEFAULT="qwen3-coder-next:q8_0"
   LOCAL_LONG_CTX=131072
 elif (( RAM_GB >= 48 )); then
   QUANT_TIER="q4"
-  MLX_QUANT="4bit"
   OLLAMA_TAG_DEFAULT="qwen3-coder-next:q4_K_M"
   LOCAL_LONG_CTX=65536
 else
   QUANT_TIER="q4-small"
-  MLX_QUANT="4bit"
   OLLAMA_TAG_DEFAULT="qwen3-coder:30b"
   LOCAL_LONG_CTX=32768
   warn "Only ${RAM_GB}GB RAM detected; falling back to qwen3-coder:30b. 64GB+ recommended."
@@ -71,18 +64,18 @@ if [[ -n "$PREV_OLLAMA_TAG" ]]; then
   OLLAMA_TAG="$PREV_OLLAMA_TAG"
   if [[ "$OLLAMA_TAG" != "$OLLAMA_TAG_DEFAULT" ]]; then
     warn "Keeping installed OLLAMA_TAG='$OLLAMA_TAG' (default for this RAM tier would be '$OLLAMA_TAG_DEFAULT'; delete config/detected.env to reset)."
-    # Recompute QUANT_TIER / MLX_QUANT / LOCAL_LONG_CTX from the *pinned*
+    # Recompute QUANT_TIER / LOCAL_LONG_CTX from the *pinned*
     # tag so all derived values stay self-consistent.
     # For q4 variants we use RAM_GB to decide context: ≥96 GB can afford
     # 131072 (adds ~4.6 GiB KV cache on top of the ~45 GiB model weights),
     # while 48-95 GB machines stay at 65536 to leave room for the OS.
     case "$OLLAMA_TAG" in
-      *:q8_0) QUANT_TIER="q8"; MLX_QUANT="8bit"; LOCAL_LONG_CTX=131072 ;;
+      *:q8_0) QUANT_TIER="q8"; LOCAL_LONG_CTX=131072 ;;
       *:q4*)
-        QUANT_TIER="q4"; MLX_QUANT="4bit"
+        QUANT_TIER="q4"
         if (( RAM_GB >= 96 )); then LOCAL_LONG_CTX=131072
         else LOCAL_LONG_CTX=65536; fi ;;
-      *) QUANT_TIER="q4-small"; MLX_QUANT="4bit"; LOCAL_LONG_CTX=32768 ;;
+      *) QUANT_TIER="q4-small"; LOCAL_LONG_CTX=32768 ;;
     esac
   fi
 else
@@ -126,16 +119,12 @@ case "$KV_CACHE_TYPE" in
   *)       KV_CACHE_NOTE="uncompressed f16 fallback" ;;
 esac
 
-# MLX is capped at 16k by the router (no TurboQuant in MLX yet)
-LOCAL_FAST_CTX=16384
-
-# Routing thresholds (tokens).
+# Routing threshold (tokens).
 # ROUTE_LONG_MAX MUST equal LOCAL_LONG_CTX: any prompt that fits in the
 # local Ollama KV cache goes to local-long; anything larger escalates to
 # Claude. Mismatching these (e.g. ROUTE_LONG_MAX=128000 with
 # LOCAL_LONG_CTX=65536) causes Ollama to silently truncate prompts that
 # land in the gap — the bug this line was added to prevent.
-ROUTE_FAST_MAX=16000
 ROUTE_LONG_MAX=$LOCAL_LONG_CTX
 
 # Ollama runtime tunables.
@@ -169,38 +158,25 @@ GPU_CORES="$GPU_CORES"
 DISK_FREE_GB=$DISK_FREE_GB
 
 QUANT_TIER="$QUANT_TIER"
-MLX_QUANT="$MLX_QUANT"
 OLLAMA_TAG="$OLLAMA_TAG"
 
 KV_CACHE_TYPE="$KV_CACHE_TYPE"
-LOCAL_FAST_CTX=$LOCAL_FAST_CTX
 LOCAL_LONG_CTX=$LOCAL_LONG_CTX
 
-ROUTE_FAST_MAX=$ROUTE_FAST_MAX
 ROUTE_LONG_MAX=$ROUTE_LONG_MAX
 
 OLLAMA_NUM_PARALLEL=$OLLAMA_NUM_PARALLEL
 OLLAMA_KEEP_ALIVE="$OLLAMA_KEEP_ALIVE"
 
 LITELLM_PORT=4000
-MLX_PORT=8081
 OLLAMA_PORT=11434
 DASHBOARD_PORT=4001
 CLAUDE_PROXY_PORT=4002
 CLAUDE_PROXY_LARGE_CTX_MODE=passthrough
 EOF
 
-# Re-stamp downstream-owned fields so we don't lose them. 30-mlx.sh writes
-# MLX_REPO; 20-ollama.sh / installer writes MLX_LOCAL_DIR.
-if [[ -n "$PREV_MLX_REPO" ]]; then
-  echo "MLX_REPO=\"$PREV_MLX_REPO\"" >> "$OUT"
-fi
-if [[ -n "$PREV_MLX_LOCAL_DIR" ]]; then
-  echo "MLX_LOCAL_DIR=\"$PREV_MLX_LOCAL_DIR\"" >> "$OUT"
-fi
-
 log "Hardware: $CHIP, ${RAM_GB}GB RAM, ${GPU_CORES}-core GPU, ${DISK_FREE_GB}GB free"
 log "Quant tier: $QUANT_TIER ($OLLAMA_TAG)"
 log "KV cache:   $KV_CACHE_TYPE ($KV_CACHE_NOTE)"
-log "Contexts:   fast=$LOCAL_FAST_CTX, long=$LOCAL_LONG_CTX"
+log "Context:    long=$LOCAL_LONG_CTX"
 log "Wrote $OUT"

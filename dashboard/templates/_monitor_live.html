@@ -67,11 +67,10 @@
 </style>
 
 {# ── Extract per-key health state into a namespace so we can reference outside loops ── #}
-{% set ns = namespace(ollama_ok=false, mlx_ok=false, mlx_status="DOWN",
+{% set ns = namespace(ollama_ok=false,
                        claude_ok=false, claude_status="DOWN") %}
 {% for ep in data.health %}
   {% if ep.key == "ollama"       %}{% set ns.ollama_ok = ep.ok %}{% endif %}
-  {% if ep.key == "mlx"          %}{% set ns.mlx_ok = ep.ok %}{% set ns.mlx_status = ep.status %}{% endif %}
   {% if ep.key == "claude_proxy" %}{% set ns.claude_ok = ep.ok %}{% set ns.claude_status = ep.status %}{% endif %}
 {% endfor %}
 
@@ -92,11 +91,6 @@
 {% if not ns.ollama_ok %}
   {% set _ = anomalies.append({"kind":"crit","title":"LOCAL-LONG (OLLAMA) DOWN",
     "desc":"Ollama :11434 is " ~ "not reachable" ~ ". Local routing is broken — traffic may fall through to Claude API."}) %}
-{% endif %}
-
-{% if not ns.mlx_ok %}
-  {% set _ = anomalies.append({"kind":"warn","title":"LOCAL-FAST (MLX) DOWN",
-    "desc":"MLX :8081 status " ~ ns.mlx_status ~ ". All traffic forced to local-long or cloud."}) %}
 {% endif %}
 
 {% if not ns.claude_ok %}
@@ -166,13 +160,6 @@
           <span class="rn rn-dead">Ollama :11434 ✕</span>
         {% endif %}
       </div>
-      {% if not ns.mlx_ok %}
-      <div class="route-path" style="margin-top:2px;">
-        <span class="rn rn-dead">MLX :8081</span>
-        <span style="color:var(--bad)">✕</span>
-        <span class="small" style="color:var(--bad)">{{ ns.mlx_status }}</span>
-      </div>
-      {% endif %}
       <div class="route-path" style="margin-top:2px;">
         <span class="rn rn-cloud" style="{% if not ns.claude_ok %}opacity:0.5{% endif %}">Claude proxy :4002</span>
         {% if not ns.claude_ok %}<span class="small" style="color:var(--warn)">{{ ns.claude_status }}</span>{% endif %}
