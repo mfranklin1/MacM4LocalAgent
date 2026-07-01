@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -32,6 +33,7 @@ JANITOR_BASE: pathlib.Path = (
     / "saoudrizwan.claude-dev/janitor"
 )
 GORTEX_BIN: pathlib.Path = pathlib.Path("/opt/homebrew/bin/gortex")
+GORTEX_PID_FILE: pathlib.Path = pathlib.Path.home() / ".gortex" / "cache" / "daemon.pid"
 
 # Endpoints to health-check. The dashboard itself (:4001) is omitted —
 # it's always reachable if we're generating this response.
@@ -80,56 +82,120 @@ def health_checks() -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 # Gortex daemon status
 # ---------------------------------------------------------------------------
+#
+# `running` must never depend on shelling out to `gortex daemon status`:
+# that call round-trips the daemon's control socket, and when the daemon's
+# indexer is backlogged (e.g. watching a large vendored directory) it can
+# take minutes to answer. Polling that on every 3s HTMX tick both (a) misreports
+# a live-but-slow daemon as "not running" and (b) piles up connections on the
+# daemon faster than a backlogged daemon can clean them up. Liveness is
+# instead a pidfile + kill(pid, 0) check — no subprocess, no socket I/O.
+# The richer fields (uptime, state, session counts) still need the CLI
+# round-trip, so that call is capped to once per GORTEX_DETAIL_TTL_SEC and
+# its result cached; a slow daemon degrades that cache's freshness without
+# ever blocking a poll.
 
-def gortex_mcp_status() -> dict[str, Any]:
-    """Run ``gortex daemon status`` and parse structured fields.
+GORTEX_DETAIL_TTL_SEC = 30.0
+GORTEX_DETAIL_TIMEOUT_SEC = 1.5
 
-    Returns a dict with keys:
-      running       bool
-      pid           int | None
-      uptime        str | None
-      state         str | None  ("ready", "warmup", …)
-      mcp_sessions  int          total MCP sessions in daemon
-      cline_sessions int         sessions whose description contains "cline"
-      raw           str          raw stdout for debugging
-    Never raises.
+_GORTEX_DETAIL_DEFAULT: dict[str, Any] = {
+    "uptime": None, "state": None, "mcp_sessions": 0, "cline_sessions": 0, "raw": "",
+}
+_gortex_detail_cache: dict[str, Any] = dict(_GORTEX_DETAIL_DEFAULT)
+_gortex_detail_cached_at: float = 0.0
+
+
+def _pid_alive(pid: int) -> bool:
+    """True if `pid` names a live process. Never raises."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, just owned by someone else
+    except Exception:
+        return False
+    return True
+
+
+def gortex_liveness() -> dict[str, Any]:
+    """Instant "is the daemon process alive" check via its pidfile.
+
+    Returns {"running": bool, "pid": int | None}. No subprocess, no
+    socket I/O — safe to call on every poll. Never raises.
     """
-    default: dict[str, Any] = {
-        "running": False, "pid": None, "uptime": None, "state": None,
-        "mcp_sessions": 0, "cline_sessions": 0, "raw": "",
-    }
+    try:
+        pid = int(GORTEX_PID_FILE.read_text().strip())
+    except Exception:
+        return {"running": False, "pid": None}
+    if not _pid_alive(pid):
+        return {"running": False, "pid": None}
+    return {"running": True, "pid": pid}
+
+
+def _parse_gortex_status(raw: str) -> dict[str, Any]:
+    """Parse the structured fields out of `gortex daemon status` stdout."""
+    info: dict[str, Any] = dict(_GORTEX_DETAIL_DEFAULT)
+
+    m = re.search(r"uptime:\s*([^,\n]+)", raw)
+    if m:
+        info["uptime"] = m.group(1).strip()
+
+    m = re.search(r"state:\s*(\S+)", raw)
+    if m:
+        info["state"] = m.group(1).rstrip(",)")
+
+    m = re.search(r"(\d+)\s+MCP\s+sessions?", raw)
+    if m:
+        info["mcp_sessions"] = int(m.group(1))
+
+    # Count session descriptors that contain "cline" (case-insensitive).
+    info["cline_sessions"] = len(re.findall(r"cli:cline", raw, flags=re.IGNORECASE))
+    return info
+
+
+def _fetch_gortex_detail(timeout: float = GORTEX_DETAIL_TIMEOUT_SEC) -> dict[str, Any]:
+    """Run `gortex daemon status` once and parse it. Only ever called from
+    the rate-limited cache refresh below — never on every poll."""
     try:
         result = subprocess.run(
             [str(GORTEX_BIN), "daemon", "status"],
-            capture_output=True, text=True, timeout=3.0,
+            capture_output=True, text=True, timeout=timeout,
         )
         raw = result.stdout.strip()
         if result.returncode != 0 or not raw:
-            return {**default, "raw": result.stderr.strip() or raw}
-
-        info: dict[str, Any] = {**default, "running": True, "raw": raw}
-
-        m = re.search(r"pid:\s*(\d+)", raw)
-        if m:
-            info["pid"] = int(m.group(1))
-
-        m = re.search(r"uptime:\s*([^,\n]+)", raw)
-        if m:
-            info["uptime"] = m.group(1).strip()
-
-        m = re.search(r"state:\s*(\S+)", raw)
-        if m:
-            info["state"] = m.group(1).rstrip(",)")
-
-        m = re.search(r"(\d+)\s+MCP\s+sessions?", raw)
-        if m:
-            info["mcp_sessions"] = int(m.group(1))
-
-        # Count session descriptors that contain "cline" (case-insensitive).
-        info["cline_sessions"] = len(re.findall(r"cli:cline", raw, flags=re.IGNORECASE))
-        return info
+            return {**_GORTEX_DETAIL_DEFAULT, "raw": result.stderr.strip() or raw}
+        return _parse_gortex_status(raw)
     except Exception as exc:
-        return {**default, "raw": str(exc)}
+        return {**_GORTEX_DETAIL_DEFAULT, "raw": str(exc)}
+
+
+def _refresh_gortex_detail_cache(force: bool = False) -> dict[str, Any]:
+    """Refresh the cached detail fields at most once per GORTEX_DETAIL_TTL_SEC."""
+    global _gortex_detail_cache, _gortex_detail_cached_at
+    now = time.time()
+    if force or (now - _gortex_detail_cached_at) >= GORTEX_DETAIL_TTL_SEC:
+        _gortex_detail_cache = _fetch_gortex_detail()
+        _gortex_detail_cached_at = now
+    return _gortex_detail_cache
+
+
+def gortex_mcp_status() -> dict[str, Any]:
+    """Combined gortex status for the dashboard.
+
+    Returns a dict with keys:
+      running       bool          from the pidfile liveness check (always fresh)
+      pid           int | None    ditto
+      uptime        str | None    from the cached `daemon status` detail
+      state         str | None    ("ready", "warmup", …), cached
+      mcp_sessions  int           total MCP sessions in daemon, cached
+      cline_sessions int          sessions whose description contains "cline", cached
+      raw           str           raw stdout/error for debugging, cached
+    Never raises.
+    """
+    live = gortex_liveness()
+    detail = _refresh_gortex_detail_cache() if live["running"] else dict(_GORTEX_DETAIL_DEFAULT)
+    return {**detail, **live}
 
 
 # ---------------------------------------------------------------------------
