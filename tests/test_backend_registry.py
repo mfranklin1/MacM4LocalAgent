@@ -1,9 +1,12 @@
 """Unit tests for router/backend_registry.py.
 
-Tests load the real config/backend-registry.yaml.  They do NOT mock file I/O;
-they rely on the file being present in the worktree (it is committed to the
-repo).  TURBO_ENABLED is manipulated via monkeypatch so the env never bleeds
-between tests.
+Tests load the real config/backend-registry.yaml (committed to the repo, not
+mocked). TURBO_ENABLED is manipulated via monkeypatch so the env never
+bleeds between tests. The `reg_turbo_on`/`reg_turbo_off` fixtures pin
+env_path to a nonexistent file so max_context comes only from the static
+YAML defaults, not the host's real hardware-detected config/detected.env
+(which varies runner-to-runner and previously made routing-boundary tests
+pass on a developer's Mac but fail on GitHub's CI runner).
 """
 
 from __future__ import annotations
@@ -52,19 +55,30 @@ def _reset_module():
 
 
 @pytest.fixture()
-def reg_turbo_on(monkeypatch):
-    """Registry loaded with TURBO_ENABLED=1."""
+def reg_turbo_on(monkeypatch, tmp_path):
+    """Registry loaded with TURBO_ENABLED=1.
+
+    Points env_path at a nonexistent file so max_context values come
+    solely from the static YAML defaults (131072 for local-long-128k,
+    etc.), not from the host's real hardware-detected
+    config/detected.env. The module singleton (`mod.registry`) reads
+    the real file, which varies by machine -- e.g. a resource-constrained
+    CI runner detects a smaller LOCAL_LONG_CTX than a developer's own
+    Mac, which previously made the 50k-token routing tests flaky
+    across environments.
+    """
     monkeypatch.setenv("TURBO_ENABLED", "1")
     mod = _import_registry()
-    return mod.registry
+    return mod.BackendRegistry(env_path=tmp_path / "nonexistent.env")
 
 
 @pytest.fixture()
-def reg_turbo_off(monkeypatch):
-    """Registry loaded with TURBO_ENABLED=0."""
+def reg_turbo_off(monkeypatch, tmp_path):
+    """Registry loaded with TURBO_ENABLED=0. See reg_turbo_on for why
+    env_path is pinned to a nonexistent file."""
     monkeypatch.setenv("TURBO_ENABLED", "0")
     mod = _import_registry()
-    return mod.registry
+    return mod.BackendRegistry(env_path=tmp_path / "nonexistent.env")
 
 
 @pytest.fixture()
