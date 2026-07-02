@@ -79,6 +79,44 @@ def test_pre_call_skips_thinking_for_claude_haiku(monkeypatch: Any) -> None:
     assert not out.get("metadata", {}).get("claude_thinking_enabled")
 
 
+def test_pre_call_skips_thinking_for_claude_code_alias_on_haiku(monkeypatch: Any) -> None:
+    """The claude-code alias resolves to Haiku 4.5 upstream (subscription
+    policy limit, 2026-07-02) — the guard must check the RESOLVED model.
+    Checking the alias string alone injected adaptive thinking and 400'd
+    every escalated turn."""
+    monkeypatch.setattr(rbs, "ENABLE_THINKING_MODE", True)
+    monkeypatch.setattr(rbs, "CLAUDE_CODE_UPSTREAM_MODEL", "claude-haiku-4-5")
+    data = {
+        "model": "claude-code",
+        "messages": [{"role": "user", "content": "design a billing service"}],
+    }
+    out = _run(_router(), data)
+    assert "thinking" not in out
+    assert not out.get("metadata", {}).get("claude_thinking_enabled")
+
+
+def test_pre_call_enables_thinking_for_claude_code_alias_on_sonnet(monkeypatch: Any) -> None:
+    """When the apikey setting repoints claude-code at a thinking-capable
+    model (CLAUDE_CODE_MODEL), the guard re-enables thinking injection."""
+    monkeypatch.setattr(rbs, "ENABLE_THINKING_MODE", True)
+    monkeypatch.setattr(rbs, "CLAUDE_CODE_UPSTREAM_MODEL", "claude-sonnet-5")
+    data = {
+        "model": "claude-code",
+        "messages": [{"role": "user", "content": "design a billing service"}],
+    }
+    out = _run(_router(), data)
+    assert out["thinking"] == {"type": "adaptive"}
+    assert out["metadata"]["claude_thinking_enabled"] is True
+
+
+def test_resolved_claude_model(monkeypatch: Any) -> None:
+    assert rbs._resolved_claude_model("claude-haiku-4-5") == "claude-haiku-4-5"
+    assert rbs._resolved_claude_model("claude-sonnet-5") == "claude-sonnet-5"
+    assert rbs._resolved_claude_model("claude-code") == rbs.CLAUDE_CODE_UPSTREAM_MODEL
+    assert rbs._resolved_claude_model("gpt-claude-code") == rbs.CLAUDE_CODE_UPSTREAM_MODEL
+    assert rbs._resolved_claude_model(None) == ""
+
+
 def test_pre_call_skips_think_for_non_qwen3_local(monkeypatch: Any, qwen3_env: None) -> None:
     """local-agent is llama3.1 — must never receive /think."""
     monkeypatch.setattr(rbs, "ENABLE_THINKING_MODE", True)
