@@ -531,6 +531,50 @@ strict-mode behavior, and `make offline-status` introspection.
 
 ---
 
+## 8.7 Claude escalation tiers (subscription haiku vs API-key Sonnet/Opus/Fable)
+
+The Team subscription OAuth token is policy-limited on the raw
+`/v1/messages` API (verified 2026-07-02): `claude-haiku-4-5` returns
+200s, while Sonnet 5 / Sonnet 4.6 / Opus 4.8 return an instant generic
+429 (`"message": "Error"`, no `retry-after`, no `anthropic-ratelimit-*`
+headers) regardless of call rate. The stack therefore runs two Claude
+auth paths:
+
+| Tier | Auth | claude-proxy route | Cost |
+|---|---|---|---|
+| `claude-code` (default) = Haiku 4.5 | subscription OAuth (keychain `Claude Code-credentials`) | `/subscription/v1/messages` | included in plan |
+| `claude-sonnet-5` / `claude-opus-4-8` / `claude-fable-5` | org API key (keychain `anthropic-api-key`) | `/apikey/v1/messages` | metered, shown in the cost dashboard |
+
+**Choosing a tier from Cline.** Settings → Features → *Claude
+Escalation*: pick Haiku (subscription), Sonnet 5, Opus 4.8, or Fable 5.
+The choice is sent as the `x-claude-escalation-model` header (via the
+`openAiHeaders` write-through); the router maps it onto the matching
+alias when it escalates a complex task. Per-turn override tags
+(`[haiku]` / `[sonnet]` / `[opus]` / `[fable]`) still win over the
+setting.
+
+**API key.** Single source of truth is the macOS keychain item
+`anthropic-api-key` (account `$USER`) — the same one
+`~/.claude/set-anthropic-env.sh` reads. Save it from Cline's key field
+(never persisted in VS Code), via `scripts/setup-anthropic-key.sh`, or:
+
+```bash
+security add-generic-password -U -a "$USER" -s anthropic-api-key -w
+```
+
+claude-proxy reads it per request with a 30s cache
+(`_get_api_key`); the key never transits Cline, HTTP headers, or
+LiteLLM. `curl -s http://127.0.0.1:4002/health | jq .api_key_available`
+tells you whether the proxy sees a key. **No key + non-haiku choice**
+downgrades that turn to haiku and stamps
+`escalation[...] no-apikey-downgrade->haiku` in the route reason
+(visible in the monitor call log).
+
+**Fable 5 notes:** thinking is always on, so turns can run minutes —
+Cline streams by default and the proxy's upstream timeout is 360s.
+Requires the org to allow 30-day data retention (Anthropic 400s
+otherwise).
+
 ## 9. What we lose vs. native Cursor agent mode
 
 - No Cursor "checkpoints" (Cline has its own task history but it's
