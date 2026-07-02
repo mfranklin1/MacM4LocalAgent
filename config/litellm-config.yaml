@@ -91,10 +91,15 @@ model_list:
       input_cost_per_token: 0.000001
       output_cost_per_token: 0.000005
 
+  # Sonnet/Opus/Fable are policy-blocked on the subscription OAuth token
+  # (instant generic 429 -- verified 2026-07-02), so these aliases route
+  # through claude-proxy's /apikey endpoint, which authenticates with the
+  # org API key from the macOS keychain (`anthropic-api-key`). Metered
+  # pay-per-token spend, tracked in cost.db / the dashboard.
   - model_name: claude-sonnet-5
     litellm_params:
       model: anthropic/claude-sonnet-5
-      api_base: http://127.0.0.1:4002/subscription
+      api_base: http://127.0.0.1:4002/apikey
       api_key: not-needed
       input_cost_per_token: 0.000002
       output_cost_per_token: 0.000010
@@ -102,10 +107,21 @@ model_list:
   - model_name: claude-opus-4-8
     litellm_params:
       model: anthropic/claude-opus-4-8
-      api_base: http://127.0.0.1:4002/subscription
+      api_base: http://127.0.0.1:4002/apikey
       api_key: not-needed
       input_cost_per_token: 0.000005
       output_cost_per_token: 0.000025
+
+  # Fable 5: thinking is always on and single requests on hard tasks can
+  # run many minutes -- Cline streams by default and claude-proxy's
+  # upstream timeout is 360s, which covers it.
+  - model_name: claude-fable-5
+    litellm_params:
+      model: anthropic/claude-fable-5
+      api_base: http://127.0.0.1:4002/apikey
+      api_key: not-needed
+      input_cost_per_token: 0.000010
+      output_cost_per_token: 0.000050
 
   - model_name: hybrid-auto
     # Magic alias: the size-based router rewrites `data["model"]` to one of

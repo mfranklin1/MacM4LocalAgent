@@ -132,6 +132,48 @@ def _get_subscription_token() -> str:
     except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError) as exc:
         raise RuntimeError(f"failed to read subscription token from keychain: {exc}") from exc
 
+
+# ── Anthropic API key (keychain) ─────────────────────────────────────────────
+# The subscription OAuth token is policy-limited to Haiku on the raw API
+# (verified 2026-07-02) -- Sonnet/Opus/Fable escalation authenticates with
+# the org API key instead. Single source of truth is the macOS keychain
+# item `anthropic-api-key` (account $USER): the same item read by
+# ~/.claude/set-anthropic-env.sh and writable via
+# scripts/setup-anthropic-key.sh or Cline's escalation setting. The env
+# var is a fallback for headless/test environments.
+_api_key_cache: dict[str, Any] = {"key": None, "expires_at": 0.0}
+_API_KEY_SERVICE = "anthropic-api-key"
+
+
+def _get_api_key() -> str | None:
+    """Anthropic API key from the keychain (env fallback), or None.
+
+    Same TTL-cache pattern as _get_subscription_token. Never raises --
+    callers branch on None to produce a clear 'no API key configured'
+    error instead of a stack trace.
+    """
+    now = time.monotonic()
+    if _api_key_cache["key"] is not None and now < _api_key_cache["expires_at"]:
+        return _api_key_cache["key"] or None
+    key = ""
+    try:
+        key = subprocess.check_output(
+            ["security", "find-generic-password",
+             "-a", os.environ.get("USER", ""), "-s", _API_KEY_SERVICE, "-w"],
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        ).decode().strip()
+    except Exception:
+        key = ""
+    if not key:
+        key = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
+    # Cache the miss too (empty string) so an unconfigured key doesn't cost
+    # a subprocess call per request.
+    _api_key_cache["key"] = key
+    _api_key_cache["expires_at"] = now + _TOKEN_TTL
+    return key or None
+
+
 # Headers forwarded verbatim when proxying to Anthropic.
 _ANTHROPIC_FORWARD_HEADERS = {
     "content-type",
@@ -514,6 +556,10 @@ async def health() -> JSONResponse:
         "large_ctx_mode": LARGE_CTX_MODE,
         "claude_auth_mode": CLAUDE_AUTH_MODE,
         "litellm_port": LITELLM_PORT,
+        # Whether the keychain (or env) holds an Anthropic API key -- the
+        # router reads this to decide if Sonnet/Opus/Fable escalation is
+        # available or the choice must downgrade to haiku (subscription).
+        "api_key_available": _get_api_key() is not None,
     })
 
 
@@ -594,35 +640,22 @@ def _build_subscription_headers(request: Request) -> dict[str, str]:
     return headers
 
 
-@app.post("/subscription/v1/messages")
-async def subscription_messages(request: Request) -> Response:
-    """Forward to api.anthropic.com using the claude.ai subscription token (or API key)."""
-    try:
-        body = await request.body()
-        body_json = json.loads(body)
-    except Exception:
-        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+async def _forward_messages(
+    body: bytes,
+    is_stream: bool,
+    upstream_headers: dict[str, str],
+    log_tag: str,
+) -> Response:
+    """Forward a /v1/messages body to Anthropic with the 429 retry loop.
 
-    is_stream = body_json.get("stream", False)
-    model = body_json.get("model", "unknown")
-
-    try:
-        upstream_headers = _build_subscription_headers(request)
-    except (ValueError, RuntimeError) as exc:
-        log.error("subscription auth error: %s", exc)
-        return JSONResponse({"error": str(exc)}, status_code=500)
-
-    log.info(
-        "route=subscription auth=%s model=%s stream=%s",
-        CLAUDE_AUTH_MODE, model, is_stream,
-    )
-
+    Shared by the subscription and apikey routes -- only the auth headers
+    (and the log tag) differ. Retry loop: only 429s are retried (with
+    backoff); every other status -- success or failure -- returns on the
+    first pass. The final attempt returns the 429 to LiteLLM so its
+    fallback chain still engages once the backoff budget is exhausted.
+    """
     timeout = httpx.Timeout(360.0, connect=10.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
-        # Retry loop: only 429s are retried (with backoff); every other
-        # status -- success or failure -- returns on the first pass.
-        # The final attempt returns the 429 to LiteLLM so its fallback
-        # chain still engages once the backoff budget is exhausted.
         for attempt in range(RETRY_429_ATTEMPTS + 1):
             delay = 0.0
             if is_stream:
@@ -636,8 +669,8 @@ async def subscription_messages(request: Request) -> Response:
                         delay = _retry_delay(attempt, resp.headers.get("retry-after"))
                         await resp.aread()  # drain before closing
                         log.warning(
-                            "subscription 429 (stream); retry %d/%d in %.1fs",
-                            attempt + 1, RETRY_429_ATTEMPTS, delay,
+                            "%s 429 (stream); retry %d/%d in %.1fs",
+                            log_tag, attempt + 1, RETRY_429_ATTEMPTS, delay,
                         )
                     elif resp.status_code != 200:
                         body_bytes = await resp.aread()
@@ -663,8 +696,8 @@ async def subscription_messages(request: Request) -> Response:
                 if resp.status_code == 429 and attempt < RETRY_429_ATTEMPTS:
                     delay = _retry_delay(attempt, resp.headers.get("retry-after"))
                     log.warning(
-                        "subscription 429; retry %d/%d in %.1fs",
-                        attempt + 1, RETRY_429_ATTEMPTS, delay,
+                        "%s 429; retry %d/%d in %.1fs",
+                        log_tag, attempt + 1, RETRY_429_ATTEMPTS, delay,
                     )
                     await asyncio.sleep(delay)
                     continue
@@ -672,11 +705,90 @@ async def subscription_messages(request: Request) -> Response:
                                 media_type="application/json")
         # Unreachable: the loop always returns on its final attempt
         # (attempt == RETRY_429_ATTEMPTS disables the retry branch).
-        raise AssertionError("subscription retry loop exited without returning")
+        raise AssertionError("retry loop exited without returning")
+
+
+@app.post("/subscription/v1/messages")
+async def subscription_messages(request: Request) -> Response:
+    """Forward to api.anthropic.com using the claude.ai subscription token (or API key)."""
+    try:
+        body = await request.body()
+        body_json = json.loads(body)
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+
+    is_stream = body_json.get("stream", False)
+    model = body_json.get("model", "unknown")
+
+    try:
+        upstream_headers = _build_subscription_headers(request)
+    except (ValueError, RuntimeError) as exc:
+        log.error("subscription auth error: %s", exc)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+    log.info(
+        "route=subscription auth=%s model=%s stream=%s",
+        CLAUDE_AUTH_MODE, model, is_stream,
+    )
+    return await _forward_messages(body, is_stream, upstream_headers, "subscription")
 
 
 @app.get("/subscription/v1/messages")
 async def subscription_ping() -> JSONResponse:
+    return JSONResponse({"type": "ping"})
+
+
+# ── LiteLLM apikey endpoint ──────────────────────────────────────────────────
+# Escalation models the subscription OAuth token cannot serve (Sonnet 5,
+# Opus 4.8, Fable 5 -- all policy-429 on subscription, verified 2026-07-02)
+# route here instead: LiteLLM entries use
+# api_base=http://127.0.0.1:4002/apikey. Auth is the org API key from the
+# macOS keychain (`anthropic-api-key`), env fallback -- see _get_api_key().
+
+
+@app.post("/apikey/v1/messages")
+async def apikey_messages(request: Request) -> Response:
+    """Forward to api.anthropic.com using the Anthropic API key (keychain)."""
+    try:
+        body = await request.body()
+        body_json = json.loads(body)
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+
+    is_stream = body_json.get("stream", False)
+    model = body_json.get("model", "unknown")
+
+    api_key = _get_api_key()
+    if not api_key:
+        # 401 (not 500): this is a configuration state the router checks
+        # via /health before routing here, so reaching this means the key
+        # was removed mid-flight. LiteLLM does not retry 401s.
+        log.error("apikey route called but no API key in keychain/env")
+        return JSONResponse(
+            {"type": "error",
+             "error": {"type": "authentication_error",
+                       "message": "no Anthropic API key configured: add one to the "
+                                  f"macOS keychain (service '{_API_KEY_SERVICE}') via "
+                                  "scripts/setup-anthropic-key.sh or the Cline "
+                                  "escalation setting"}},
+            status_code=401,
+        )
+
+    headers: dict[str, str] = {}
+    for hname in ("anthropic-version", "anthropic-beta", "content-type"):
+        val = request.headers.get(hname)
+        if val:
+            headers[hname] = val
+    headers.setdefault("content-type", "application/json")
+    headers.setdefault("anthropic-version", "2023-06-01")
+    headers["x-api-key"] = api_key
+
+    log.info("route=apikey model=%s stream=%s", model, is_stream)
+    return await _forward_messages(body, is_stream, headers, "apikey")
+
+
+@app.get("/apikey/v1/messages")
+async def apikey_ping() -> JSONResponse:
     return JSONResponse({"type": "ping"})
 
 
