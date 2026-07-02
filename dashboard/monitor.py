@@ -35,6 +35,12 @@ JANITOR_BASE: pathlib.Path = (
 GORTEX_BIN: pathlib.Path = pathlib.Path("/opt/homebrew/bin/gortex")
 GORTEX_PID_FILE: pathlib.Path = pathlib.Path.home() / ".gortex" / "cache" / "daemon.pid"
 
+# In-flight request snapshot written by the LiteLLM-side router callback
+# (router/route_by_size.py:_flush_active) the moment a request starts, and
+# cleared when it completes. This is how the monitor shows a request as
+# "running now" — before it lands in cost.db, which only happens on success.
+ACTIVE_PATH: pathlib.Path = pathlib.Path(__file__).resolve().parents[1] / ".logs" / "active.json"
+
 # Endpoints to health-check. The dashboard itself (:4001) is omitted —
 # it's always reachable if we're generating this response.
 ENDPOINTS: list[dict[str, Any]] = [
@@ -351,6 +357,37 @@ def today_summary() -> dict[str, Any]:
         }
 
 
+def active_requests() -> list[dict[str, Any]]:
+    """Return the currently in-flight requests, newest first.
+
+    Read from the router's ``active.json`` snapshot so the monitor can show
+    a request the instant it starts — before it ever reaches ``cost.db``
+    (which only records a row on completion). Each row gains an
+    ``elapsed_sec`` field so the UI can render a live "running for Ns" timer.
+
+    Returns [] on any failure: the file may not exist yet (cold start), may
+    be mid-rewrite, or the proxy may simply be idle. The monitor must never
+    crash because there's nothing running.
+    """
+    try:
+        raw = ACTIVE_PATH.read_text()
+        rows = json.loads(raw)
+    except Exception:
+        return []
+    if not isinstance(rows, list):
+        return []
+    now = time.time()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        started = float(r.get("started", now))
+        r["elapsed_sec"] = max(0.0, now - started)
+        out.append(r)
+    out.sort(key=lambda r: r.get("started", 0), reverse=True)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -365,6 +402,7 @@ def monitor_data() -> dict[str, Any]:
         "health":       health_checks(),
         "gortex":       gortex_mcp_status(),
         "janitor":      janitor_state(),
+        "active":       active_requests(),
         "calls":        recent_calls(),
         "summary":      today_summary(),
         "generated_at": int(time.time()),

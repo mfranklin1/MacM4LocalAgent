@@ -57,6 +57,9 @@
   .badge-bad  { background: rgba(255,107,107,.12); color: var(--bad);  border: 1px solid rgba(255,107,107,.3); padding: 1px 7px; border-radius: 3px; font-size: 11px; }
 
   .call-maxed td { background: rgba(255,107,107,.05); }
+  .call-active td { background: rgba(61,220,151,.07); }
+  @keyframes pulse-row { 0%,100% { opacity: 1; } 50% { opacity: .55; } }
+  .call-active td:first-child { animation: pulse-row 1.6s ease-in-out infinite; }
   .small { font-size: 11px; }
   .mono  { font-family: monospace; }
   .ok    { color: var(--ok); }
@@ -172,6 +175,36 @@
           <span class="muted small">No requests today yet.</span>
         {% endif %}
       </div>
+    </div>
+
+    {# Running now — in-flight requests, shown the instant a turn starts #}
+    <div class="card">
+      <h3>Running now
+        {% if data.active %}<span class="tier tier-local-long" style="margin-left:6px">{{ data.active|length }} in flight</span>{% endif %}
+      </h3>
+      {% if data.active %}
+      <table>
+        <thead>
+          <tr>
+            <th>elapsed</th><th>tier</th><th>model</th><th>in tok (est)</th><th>task / reason</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for a in data.active %}
+          <tr class="call-active">
+            <td class="mono">{{ "%.0f"|format(a.elapsed_sec) }}s</td>
+            <td><span class="tier tier-{{ a.tier }}">{{ a.tier }}</span></td>
+            <td class="mono small">{{ a.model }}</td>
+            <td class="mono">{{ "{:,}".format(a.in_tok_est or 0) }}</td>
+            <td class="muted small" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                title="{{ a.task_text_short or a.route_reason }}">{{ a.task_text_short or a.route_reason }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p class="muted">Idle — no request in flight.</p>
+      {% endif %}
     </div>
 
     {# Call log #}
