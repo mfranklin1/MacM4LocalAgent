@@ -43,17 +43,24 @@ from router.route_by_size import (
         ("claude-code", True),
         ("anthropic/claude-sonnet-5", True),
         ("gpt-claude-code", True),
-        # Legacy ollama/ route returns tool calls as raw JSON text.
+        # Legacy ollama/ route returns tool calls as raw JSON text even
+        # for models that support tools.
         ("ollama/qwen3-coder-next:q4", False),
-        # ollama_chat/ (OpenAI-compat) parses tool calls natively.
-        ("ollama_chat/qwen2.5-coder:32b", True),
+        # ollama_chat/ parses the envelope -- but only if the model emits
+        # it. qwen3-coder-next does (post template fix); llama3.1 does;
+        # qwen2.5-coder demonstrably does not (raw JSON, live-tested).
+        ("ollama_chat/qwen3-coder-next:q4", True),
         ("ollama_chat/llama3.1:8b-instruct-q8_0", True),
-        # Alias names: local-long is the configured non-tool-native tier.
-        ("local-long", False),
-        ("gpt-local-long", False),
+        ("ollama_chat/qwen2.5-coder:32b", False),
+        # Alias names: the qwen2.5-coder tiers are the configured
+        # non-tool-native set; local-long is tool-native since the
+        # 2026-07-02 template fix.
+        ("local-long", True),
+        ("gpt-local-long", True),
         ("local-agent", True),
-        ("local-coder-32b", True),
-        ("gpt-local-coder-32b", True),
+        ("local-coder-14b", False),
+        ("local-coder-32b", False),
+        ("gpt-local-coder-32b", False),
     ],
 )
 def test_is_tool_native_model(model: str, expected: bool) -> None:
@@ -103,13 +110,24 @@ def test_annotate_marks_fallback_with_tools_as_text_risk() -> None:
 
 
 def test_annotate_marks_fallback_without_risk_for_tool_native_target() -> None:
-    # After the config fix, fallbacks land on local-coder-32b -- the
-    # marker still appears (a fallback DID fire) but no risk flag.
+    # After the config fix, fallbacks land on local-long (tool-native
+    # since the template fix) -- the marker still appears (a fallback DID
+    # fire) but no risk flag.
+    out = _annotate_router_fallback(
+        "ollama_chat/qwen3-coder-next:q4", "claude-code", True, "complex"
+    )
+    assert "ROUTER-FALLBACK(claude-code->ollama_chat/qwen3-coder-next:q4)" in out
+    assert "TOOLS-AS-TEXT-RISK" not in out
+
+
+def test_annotate_flags_qwen25_coder_even_via_ollama_chat() -> None:
+    # qwen2.5-coder writes tool calls as raw JSON text despite declaring
+    # the tools capability -- the risk flag must fire even though it's
+    # served via ollama_chat/.
     out = _annotate_router_fallback(
         "ollama_chat/qwen2.5-coder:32b", "claude-code", True, "complex"
     )
-    assert "ROUTER-FALLBACK(claude-code->ollama_chat/qwen2.5-coder:32b)" in out
-    assert "TOOLS-AS-TEXT-RISK" not in out
+    assert "TOOLS-AS-TEXT-RISK" in out
 
 
 def test_annotate_marks_fallback_without_tools_without_risk() -> None:
@@ -427,3 +445,23 @@ class TestSubscription429Retry(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---- shipped defaults ------------------------------------------------------
+
+
+def test_shipped_defaults_route_tools_to_local_long() -> None:
+    """Guard the defaults that make the primary 80B tier the tool target.
+
+    Lives here (not test_tool_native_redirect.py) because that module's
+    autouse fixture monkeypatches these very attributes. Skip the
+    assertion when the process env overrides the default.
+    """
+    import os
+
+    import router.route_by_size as rbs
+
+    if not os.environ.get("CLINE_TOOL_TIER"):
+        assert rbs.TOOL_NATIVE_LOCAL_TIER == "local-long"
+    if not os.environ.get("CLINE_NON_TOOL_TIERS"):
+        assert rbs._NON_TOOL_NATIVE_LOCAL == {"local-coder-14b", "local-coder-32b"}

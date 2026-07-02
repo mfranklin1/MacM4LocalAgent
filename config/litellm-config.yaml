@@ -1,7 +1,13 @@
 model_list:
+  # Tool-native since 2026-07-02: the qwen3-coder-next Ollama import was
+  # recreated with the qwen3-coder RENDERER/PARSER (see
+  # docs/RUNBOOK-cline-setup.md), so Ollama now parses its native tool-call
+  # format into structured `tool_calls`. Served via ollama_chat/ (the
+  # OpenAI-compat layer) -- the legacy ollama/ route bypasses tool parsing
+  # and returns tool calls as raw JSON text.
   - model_name: local-long
     litellm_params:
-      model: ollama/@@OLLAMA_TAG@@
+      model: ollama_chat/@@OLLAMA_TAG@@
       api_base: http://127.0.0.1:@@OLLAMA_PORT@@
       input_cost_per_token: 0.0
       output_cost_per_token: 0.0
@@ -13,10 +19,10 @@ model_list:
           num_ctx: @@LOCAL_LONG_CTX@@
 
   # Tool-capable agent model. Pull beforehand: `ollama pull llama3.1:8b-instruct-q8_0`.
-  # Unlike local-long (qwen3-coder-next), llama3.1 reliably emits the
-  # <tool_call>...</tool_call> envelope that Ollama's OpenAI-compat layer
-  # parses into structured `tool_calls`, so Cursor's agent UI renders
-  # progress correctly instead of showing raw JSON in the chat.
+  # llama3.1 reliably emits the <tool_call>...</tool_call> envelope that
+  # Ollama's OpenAI-compat layer parses into structured `tool_calls`.
+  # Kept as the small/fast tool tier now that local-long is also
+  # tool-native.
   - model_name: local-agent
     litellm_params:
       model: ollama_chat/llama3.1:8b-instruct-q8_0
@@ -35,22 +41,17 @@ model_list:
       input_cost_per_token: 0.0
       output_cost_per_token: 0.0
 
+  # NOTE (verified 2026-07-02): qwen2.5-coder declares the `tools`
+  # capability but does NOT reliably emit the <tool_call> envelope -- it
+  # writes the call as raw JSON text (0/2 in live tests). Keep these tiers
+  # for tool-free benching only; the router redirects tool-carrying turns
+  # off them (CLINE_NON_TOOL_TIERS).
   - model_name: local-coder-32b
     litellm_params:
       model: ollama_chat/qwen2.5-coder:32b
       api_base: http://127.0.0.1:@@OLLAMA_PORT@@
       input_cost_per_token: 0.0
       output_cost_per_token: 0.0
-      # local-coder-32b doubles as the Claude-tier fallback (see
-      # router_settings.fallbacks): tool-native via ollama_chat/, so a
-      # rate-limited claude-code turn that carries `tools` still produces
-      # structured tool_calls instead of raw JSON text. Needs the full
-      # window -- fallback prompts arrive at claude-code size (72K+ seen
-      # in practice), and Ollama's Modelfile default would silently
-      # truncate them.
-      extra_body:
-        options:
-          num_ctx: @@LOCAL_LONG_CTX@@
 
   - model_name: claude-code
     # Default tier for the hybrid-auto router when it escalates to Claude.
@@ -150,7 +151,7 @@ model_list:
   # / CLI / benches, keep using the short names (`local-agent`, etc.).
   - model_name: gpt-local-long
     litellm_params:
-      model: ollama/@@OLLAMA_TAG@@
+      model: ollama_chat/@@OLLAMA_TAG@@
       api_base: http://127.0.0.1:@@OLLAMA_PORT@@
       input_cost_per_token: 0.0
       output_cost_per_token: 0.0
@@ -178,11 +179,6 @@ model_list:
       api_base: http://127.0.0.1:@@OLLAMA_PORT@@
       input_cost_per_token: 0.0
       output_cost_per_token: 0.0
-      # Mirror of local-coder-32b -- same fallback role for the gpt-*
-      # Claude aliases, same full-window requirement.
-      extra_body:
-        options:
-          num_ctx: @@LOCAL_LONG_CTX@@
 
   - model_name: gpt-claude-code
     # Cursor-shaped mirror of `claude-code`. Same upstream model.
@@ -246,21 +242,22 @@ router_settings:
   # Using a local model avoids Anthropic-specific param bleed-through that
   # occurs when falling back to another Anthropic model (e.g. thinking params
   # auto-injected by LiteLLM for Sonnet/Opus but rejected by Haiku).
-  # Claude-tier fallbacks land on local-coder-32b, NOT local-long:
-  # qwen3-coder-next (local-long) emits tool calls as raw JSON text on the
-  # legacy ollama/ route, and router-level fallbacks bypass the pre-call
-  # hook's tool-native redirect entirely -- so a rate-limited (429)
-  # claude-code turn carrying `tools` used to stall Cline with an
-  # unexecutable JSON blob. qwen2.5-coder:32b on ollama_chat/ is
-  # tool-native and the strongest local tier for the complex tasks that
-  # get routed to Claude in the first place.
+  # Claude-tier fallbacks land on local-long: since the qwen3-coder-next
+  # import was recreated with the qwen3-coder RENDERER/PARSER (2026-07-02)
+  # and local-long moved to ollama_chat/, it's both the strongest local
+  # tier AND tool-native -- a rate-limited (429) claude-code turn carrying
+  # `tools` now degrades to structured tool_calls from the 80B model
+  # instead of stalling Cline with an unexecutable raw-JSON blob. (Router-
+  # level fallbacks bypass the pre-call hook's tool-native redirect, so
+  # the fallback target itself must be tool-native. qwen2.5-coder:32b was
+  # tried first and does NOT reliably emit the tool-call envelope.)
   fallbacks:
-    - claude-code: ["local-coder-32b"]
-    - claude-sonnet-5: ["local-coder-32b"]
-    - claude-opus-4-8: ["local-coder-32b"]
-    - gpt-claude-code: ["gpt-local-coder-32b"]
-    - gpt-claude-sonnet-5: ["gpt-local-coder-32b"]
-    - gpt-claude-opus-4-8: ["gpt-local-coder-32b"]
+    - claude-code: ["local-long"]
+    - claude-sonnet-5: ["local-long"]
+    - claude-opus-4-8: ["local-long"]
+    - gpt-claude-code: ["gpt-local-long"]
+    - gpt-claude-sonnet-5: ["gpt-local-long"]
+    - gpt-claude-opus-4-8: ["gpt-local-long"]
 
 # No general_settings.master_key by design.
 #

@@ -177,21 +177,21 @@ log "GGUF on disk: $GGUF_PATH (${GGUF_GB} GB)"
 # The eos token for Qwen3 is <|im_end|>; we add it as a stop parameter
 # so the model halts cleanly at the end of an assistant turn even if
 # the client doesn't pass its own stop list.
+#
+# RENDERER/PARSER (2026-07-02): use Ollama's built-in qwen3-coder
+# renderer + parser (Ollama >= 0.12) instead of a handwritten TEMPLATE.
+# The renderer emits the full canonical chat format INCLUDING the tools
+# section, and the parser turns the model's native tool-call output into
+# structured OpenAI `tool_calls`. A handwritten ChatML TEMPLATE (the
+# previous approach) leaves the model registered with
+# `Capabilities: completion` only -- Ollama then rejects `tools` on the
+# OpenAI endpoint and every tool call reaches the harness as raw JSON
+# text that Cline can't execute (the "tool-call-as-text" stall).
 MODELFILE="$TARGET_DIR/Modelfile"
 cat > "$MODELFILE" <<'MODELFILE_EOF'
 FROM __GGUF_PATH__
-TEMPLATE """{{- if .System }}<|im_start|>system
-{{ .System }}<|im_end|>
-{{ end }}
-{{- range $i, $_ := .Messages }}
-{{- if eq .Role "user" }}<|im_start|>user
-{{ .Content }}<|im_end|>
-{{ else if eq .Role "assistant" }}<|im_start|>assistant
-{{ .Content }}<|im_end|>
-{{ end }}
-{{- end }}
-<|im_start|>assistant
-"""
+RENDERER qwen3-coder
+PARSER qwen3-coder
 PARAMETER num_ctx __LOCAL_LONG_CTX__
 PARAMETER num_predict 8192
 PARAMETER stop "<|im_end|>"

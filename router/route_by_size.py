@@ -112,21 +112,32 @@ ENABLE_MULTI_TURN_TIGHTEN = _control_flag("OVERGEN_MULTI_TURN", "1")
 ENABLE_THINK_INJECTION = _control_flag("ROUTER_THINK_INJECTION", "1")
 
 # Tool-call routing. Cline executes ONLY native OpenAI `tool_calls`; it never
-# parses tool calls out of text. qwen3-coder-next (the local-long tier, on
-# Ollama's legacy /api/generate route) emits tool calls as raw JSON *text*
-# instead, which Cline can't execute -- the turn stalls showing the JSON blob.
-# So when a request carries `tools` but routing landed on a local tier that
-# can't emit parseable tool_calls, redirect it to a tool-native local tier
-# (llama3.1 on ollama_chat/, which Ollama's OpenAI-compat layer parses into
-# structured tool_calls). Set CLINE_TOOL_TIER="" to disable the redirect.
-TOOL_NATIVE_LOCAL_TIER = (os.environ.get("CLINE_TOOL_TIER") or _ENV.get("CLINE_TOOL_TIER", "local-agent")).strip()
+# parses tool calls out of text. When a request carries `tools` but routing
+# landed on a local tier whose model can't emit parseable tool_calls, redirect
+# it to a tool-native local tier. Set CLINE_TOOL_TIER="" to disable.
+#
+# History: local-long (qwen3-coder-next) was the non-tool-native tier until
+# 2026-07-02, when its Ollama import was recreated with the qwen3-coder
+# RENDERER/PARSER and moved to ollama_chat/ -- it is now BOTH the strongest
+# local tier and tool-native, so it became the redirect target instead of
+# the redirect source. The qwen2.5-coder tiers stay non-tool-native: the
+# model declares the `tools` capability but writes calls as raw JSON text
+# (0/2 in live tests) instead of the <tool_call> envelope Ollama parses.
+TOOL_NATIVE_LOCAL_TIER = (os.environ.get("CLINE_TOOL_TIER") or _ENV.get("CLINE_TOOL_TIER", "local-long")).strip()
 # Local tiers whose underlying model does NOT reliably emit parseable
-# tool_calls. Comma-separated aliases; qwen3-coder-next == local-long.
+# tool_calls. Comma-separated aliases.
 _NON_TOOL_NATIVE_LOCAL = {
     t.strip()
-    for t in (os.environ.get("CLINE_NON_TOOL_TIERS") or _ENV.get("CLINE_NON_TOOL_TIERS", "local-long")).split(",")
+    for t in (
+        os.environ.get("CLINE_NON_TOOL_TIERS")
+        or _ENV.get("CLINE_NON_TOOL_TIERS", "local-coder-14b,local-coder-32b")
+    ).split(",")
     if t.strip()
 }
+# Upstream model-id substrings known to fail tool-call emission regardless
+# of which alias or route served them (used by _is_tool_native_model for
+# post-hoc fallback annotation, where only the upstream id is available).
+_NON_TOOL_NATIVE_MODEL_SUBSTRINGS = ("qwen2.5-coder",)
 
 # Thinking mode: stream a live reasoning trace into the harness (Cline)
 # for BOTH tiers. When on:
@@ -1132,13 +1143,17 @@ def _is_tool_native_model(model: str) -> bool:
 
     Claude tiers are always tool-native. Local tiers are tool-native only
     when served through Ollama's OpenAI-compat layer (`ollama_chat/`
-    upstream ids); the legacy `ollama/` route returns tool calls as raw
-    JSON text. Alias names are checked against _NON_TOOL_NATIVE_LOCAL
-    (default: local-long == qwen3-coder-next on the legacy route)."""
+    upstream ids); the legacy `ollama/` route bypasses tool parsing and
+    returns tool calls as raw JSON text. Alias names are checked against
+    _NON_TOOL_NATIVE_LOCAL, and upstream ids additionally against
+    _NON_TOOL_NATIVE_MODEL_SUBSTRINGS (models that declare the tools
+    capability but don't emit the envelope, e.g. qwen2.5-coder)."""
     if _model_to_tier(model) == "claude":
         return True
     m_lower = model.lower()
     if m_lower.startswith("ollama/"):
+        return False
+    if any(s in m_lower for s in _NON_TOOL_NATIVE_MODEL_SUBSTRINGS):
         return False
     canonical = model[len("gpt-"):] if model.startswith("gpt-") else model
     return canonical not in _NON_TOOL_NATIVE_LOCAL
@@ -1215,15 +1230,17 @@ class SizeBasedRouter(_LiteLLMCustomLogger):
         native tool_calls onto the tool-native local tier.
 
         Cline (and any OpenAI-native harness) only executes structured
-        `tool_calls`; qwen3-coder-next (local-long) emits them as raw JSON
-        text, so the turn stalls. When the request carries `tools` and the
+        `tool_calls`; the qwen2.5-coder tiers emit them as raw JSON text,
+        so the turn stalls. When the request carries `tools` and the
         resolved model is a non-tool-native local tier, rewrite it to
-        TOOL_NATIVE_LOCAL_TIER (llama3.1 on ollama_chat/) and stamp the
-        reason so the redirect is visible in the monitor / cost ledger.
+        TOOL_NATIVE_LOCAL_TIER (default local-long: qwen3-coder-next via
+        ollama_chat/, tool-native since the 2026-07-02 template fix) and
+        stamp the reason so the redirect is visible in the monitor / cost
+        ledger.
 
         No-op when: the redirect is disabled, the turn carries no tools, the
         model is a Claude tier, or the local tier is already tool-native
-        (e.g. local-agent, local-coder-*). Never raises -- the caller's
+        (e.g. local-long, local-agent). Never raises -- the caller's
         try/except already guards the whole pre-call hook."""
         if not TOOL_NATIVE_LOCAL_TIER:
             return
