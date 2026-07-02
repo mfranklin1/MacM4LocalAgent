@@ -139,6 +139,32 @@ _NON_TOOL_NATIVE_LOCAL = {
 # post-hoc fallback annotation, where only the upstream id is available).
 _NON_TOOL_NATIVE_MODEL_SUBSTRINGS = ("qwen2.5-coder",)
 
+# What the `claude-code` alias resolves to upstream. MUST stay in sync with
+# the claude-code entry in config/litellm-config.yaml. Default is Haiku 4.5
+# -- the only model the Team subscription OAuth token is permitted to call
+# on the raw API (verified 2026-07-02; Sonnet/Opus policy-429). Controls
+# whether thinking-mode params are injected: Haiku 4.5 rejects adaptive
+# thinking and output_config.effort with a 400, so the injection guard must
+# see the UPSTREAM model, not the alias. The planned apikey escalation
+# setting will override this (env or detected.env) when claude-code is
+# repointed at sonnet/opus/fable.
+CLAUDE_CODE_UPSTREAM_MODEL = (
+    os.environ.get("CLAUDE_CODE_MODEL")
+    or _ENV.get("CLAUDE_CODE_MODEL", "claude-haiku-4-5")
+).strip()
+
+
+def _resolved_claude_model(model_name: str | None) -> str:
+    """Resolve a Claude-tier alias to its upstream model id for capability
+    checks. Only `claude-code` (and its gpt- mirror) is indirect; the
+    per-model aliases (claude-haiku-4-5, claude-sonnet-5, ...) already name
+    their upstream model."""
+    name = model_name or ""
+    canonical = name[len("gpt-"):] if name.startswith("gpt-") else name
+    if canonical == "claude-code":
+        return CLAUDE_CODE_UPSTREAM_MODEL
+    return name
+
 # Thinking mode: stream a live reasoning trace into the harness (Cline)
 # for BOTH tiers. When on:
 #   - Qwen3 local tiers get /think injected on every turn (so the model
@@ -1429,12 +1455,16 @@ class SizeBasedRouter(_LiteLLMCustomLogger):
                     meta["qwen3_think_injected"] = True
 
             # Adaptive thinking is unsupported on Haiku tiers, so skip them
-            # (injecting it 400s). Opus/Sonnet 4.6+ and the default
-            # claude-code (Opus) tier all accept it.
+            # (injecting it 400s: Haiku 4.5 rejects thinking.type=adaptive
+            # AND output_config.effort). The check must resolve aliases to
+            # their upstream model -- `claude-code` currently maps to
+            # claude-haiku-4-5 (subscription policy limit), so checking the
+            # alias string alone would inject thinking and 400 every
+            # escalated turn.
             if (
                 ENABLE_THINKING_MODE
                 and _is_claude_model_name(model_name)
-                and "haiku" not in (model_name or "").lower()
+                and "haiku" not in _resolved_claude_model(model_name).lower()
             ):
                 apply_claude_thinking_params(data, effort=_thinking_effort())
                 meta = data.setdefault("metadata", {})
