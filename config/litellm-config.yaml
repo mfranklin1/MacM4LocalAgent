@@ -55,24 +55,30 @@ model_list:
 
   - model_name: claude-code
     # Default tier for the hybrid-auto router when it escalates to Claude.
-    # Pinned to Sonnet 5 -- higher per-hour request quota than Opus on the
-    # Team subscription token, which prevents rate-limit storms when Cline
-    # retries rapidly. Use claude-opus-4-8 directly for tasks that need it.
-    # Override per-turn with [haiku] or [opus] tags. Pricing per token
-    # in cost.db is computed from cost/pricing.py, NOT the values below;
-    # the input/output_cost_per_token fields here only affect LiteLLM's
-    # internal /spend bookkeeping and are kept in sync as a courtesy.
+    # Pinned to Haiku 4.5: verified 2026-07-02 that the Team subscription
+    # OAuth token is policy-limited on the raw /v1/messages API -- haiku
+    # returns 200s, while Sonnet 5 / Sonnet 4.6 / Opus 4.8 all return an
+    # instant generic 429 ("message": "Error", no retry-after, no
+    # anthropic-ratelimit-* headers) regardless of call rate or the
+    # oauth-2025-04-20 beta header. Zero non-haiku successes exist in the
+    # entire cost.db history. Sonnet/Opus/Fable escalation requires
+    # CLAUDE_AUTH_MODE=apikey with ANTHROPIC_API_KEY (pay-per-token).
+    # Override per-turn with [haiku] / [sonnet] / [opus] tags. Pricing per
+    # token in cost.db is computed from cost/pricing.py, NOT the values
+    # below; the input/output_cost_per_token fields here only affect
+    # LiteLLM's internal /spend bookkeeping and are kept in sync as a
+    # courtesy.
     #
     # Auth is handled by the claude_proxy subscription endpoint (port 4002).
     # CLAUDE_AUTH_MODE=subscription (default) uses the macOS keychain OAuth
     # token; CLAUDE_AUTH_MODE=apikey uses ANTHROPIC_API_KEY instead.
     #
     litellm_params:
-      model: anthropic/claude-sonnet-5
+      model: anthropic/claude-haiku-4-5
       api_base: http://127.0.0.1:4002/subscription
       api_key: not-needed
-      input_cost_per_token: 0.000002
-      output_cost_per_token: 0.000010
+      input_cost_per_token: 0.000001
+      output_cost_per_token: 0.000005
 
   # Per-tier Claude aliases. Targets for the inline override tags
   # ([haiku] / [sonnet] / [opus]) and for callers that want to pin
@@ -183,11 +189,11 @@ model_list:
   - model_name: gpt-claude-code
     # Cursor-shaped mirror of `claude-code`. Same upstream model.
     litellm_params:
-      model: anthropic/claude-sonnet-5
+      model: anthropic/claude-haiku-4-5
       api_base: http://127.0.0.1:4002/subscription
       api_key: not-needed
-      input_cost_per_token: 0.000002
-      output_cost_per_token: 0.000010
+      input_cost_per_token: 0.000001
+      output_cost_per_token: 0.000005
 
   # Cursor-shaped mirrors of the per-tier Claude aliases.
   - model_name: gpt-claude-haiku-4-5
