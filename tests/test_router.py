@@ -493,9 +493,12 @@ def test_extract_user_task_handles_list_content() -> None:
     assert _extract_user_task(msgs) == "Fix bug"
 
 
-def test_extract_user_task_returns_none_for_non_cline() -> None:
+def test_extract_user_task_falls_back_to_plain_user_text() -> None:
+    # Native tool-calling Cline builds (v4.x) dropped the <task> envelope;
+    # the first user message's plain text IS the task. Callers only invoke
+    # this after _looks_like_cline, so non-Cline traffic never reaches it.
     msgs = [{"role": "user", "content": "just a regular question"}]
-    assert _extract_user_task(msgs) is None
+    assert _extract_user_task(msgs) == "just a regular question"
 
 
 def test_extract_user_task_returns_none_for_empty() -> None:
