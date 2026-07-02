@@ -69,6 +69,13 @@ def _per_token(per_mtok: float) -> float:
 # Source of truth: https://docs.anthropic.com/en/docs/about-claude/pricing
 # Last reconciled: see PRICING_LAST_UPDATED above.
 CLAUDE_PRICES: dict[str, ClaudeRate] = {
+    "claude-fable-5": ClaudeRate(
+        input=_per_token(10.0),
+        output=_per_token(50.0),
+        cache_write_5m=_per_token(12.50),
+        cache_write_1h=_per_token(20.0),
+        cache_read=_per_token(1.0),
+    ),
     "claude-sonnet-5": ClaudeRate(
         # Introductory pricing through 2026-08-31; standard after is $3/$15/1M.
         input=_per_token(2.0),

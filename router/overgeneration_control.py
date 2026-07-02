@@ -523,9 +523,10 @@ def apply_claude_thinking_params(
 
     Sets `thinking={"type":"adaptive"}` and an `output_config.effort` knob
     (the model decides when/how deeply to think; effort is soft guidance),
-    forces the Anthropic-required sampling params (temperature must be 1 and
-    top_p/top_k must be unset when thinking is on), and floors `max_tokens`
-    so a tiny inbound cap can't starve the reasoning trace.
+    strips all sampling params (temperature/top_p/top_k -- removed outright
+    on Opus 4.7/4.8 and Fable 5, and safely omittable everywhere else), and
+    floors `max_tokens` so a tiny inbound cap can't starve the reasoning
+    trace.
 
     Uses adaptive rather than the legacy `{"type":"enabled","budget_tokens"}`
     form, which 400s on Opus 4.7/4.8. Unknown effort values fall back to the
@@ -540,8 +541,11 @@ def apply_claude_thinking_params(
             output_config = {}
         output_config["effort"] = eff
         data["output_config"] = output_config
-        # Anthropic rejects temperature != 1 / any top_p|top_k when thinking is on.
-        data["temperature"] = 1
+        # Strip ALL sampling params. Older guidance was temperature=1 with
+        # thinking on, but Opus 4.7/4.8 and Fable 5 removed sampling params
+        # entirely (any temperature/top_p/top_k -> 400), and omitting them
+        # is valid on every thinking-capable model. Never send them.
+        data.pop("temperature", None)
         data.pop("top_p", None)
         data.pop("top_k", None)
         current = data.get("max_tokens")

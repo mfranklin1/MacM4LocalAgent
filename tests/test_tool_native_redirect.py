@@ -1,9 +1,14 @@
 """Tests for the tool-native redirect in the LiteLLM pre-call hook.
 
-Cline executes only native OpenAI `tool_calls`; qwen3-coder-next (the
-local-long tier) emits them as raw JSON text, which stalls the turn. The
-redirect moves any tool-carrying request off a non-tool-native local tier
-onto the tool-native tier (llama3.1 on ollama_chat/, alias `local-agent`).
+Cline executes only native OpenAI `tool_calls`; the qwen2.5-coder tiers
+emit them as raw JSON text, which stalls the turn. The redirect moves any
+tool-carrying request off a non-tool-native local tier onto the tool-native
+tier (default `local-long`: qwen3-coder-next via ollama_chat/, tool-native
+since the 2026-07-02 template fix).
+
+The fixture pins the tier config explicitly, so these tests exercise the
+redirect mechanics regardless of the shipped defaults; the defaults
+themselves are asserted in test_shipped_defaults below.
 
 These drive SizeBasedRouter.async_pre_call_hook end-to-end (resolved model,
 so the hybrid-auto branch is skipped) plus unit tests of the helper.
@@ -126,3 +131,4 @@ def test_helper_preserves_prior_route_reason(monkeypatch: Any) -> None:
             "metadata": {"route_reason": "cline-mode: complex"}}
     _router()._maybe_redirect_tools_to_native(data)
     assert "cline-mode: complex" in data["metadata"]["route_reason"]
+

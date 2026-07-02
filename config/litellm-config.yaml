@@ -1,7 +1,13 @@
 model_list:
+  # Tool-native since 2026-07-02: the qwen3-coder-next Ollama import was
+  # recreated with the qwen3-coder RENDERER/PARSER (see
+  # docs/RUNBOOK-cline-setup.md), so Ollama now parses its native tool-call
+  # format into structured `tool_calls`. Served via ollama_chat/ (the
+  # OpenAI-compat layer) -- the legacy ollama/ route bypasses tool parsing
+  # and returns tool calls as raw JSON text.
   - model_name: local-long
     litellm_params:
-      model: ollama/@@OLLAMA_TAG@@
+      model: ollama_chat/@@OLLAMA_TAG@@
       api_base: http://127.0.0.1:@@OLLAMA_PORT@@
       input_cost_per_token: 0.0
       output_cost_per_token: 0.0
@@ -13,10 +19,10 @@ model_list:
           num_ctx: @@LOCAL_LONG_CTX@@
 
   # Tool-capable agent model. Pull beforehand: `ollama pull llama3.1:8b-instruct-q8_0`.
-  # Unlike local-long (qwen3-coder-next), llama3.1 reliably emits the
-  # <tool_call>...</tool_call> envelope that Ollama's OpenAI-compat layer
-  # parses into structured `tool_calls`, so Cursor's agent UI renders
-  # progress correctly instead of showing raw JSON in the chat.
+  # llama3.1 reliably emits the <tool_call>...</tool_call> envelope that
+  # Ollama's OpenAI-compat layer parses into structured `tool_calls`.
+  # Kept as the small/fast tool tier now that local-long is also
+  # tool-native.
   - model_name: local-agent
     litellm_params:
       model: ollama_chat/llama3.1:8b-instruct-q8_0
@@ -35,6 +41,11 @@ model_list:
       input_cost_per_token: 0.0
       output_cost_per_token: 0.0
 
+  # NOTE (verified 2026-07-02): qwen2.5-coder declares the `tools`
+  # capability but does NOT reliably emit the <tool_call> envelope -- it
+  # writes the call as raw JSON text (0/2 in live tests). Keep these tiers
+  # for tool-free benching only; the router redirects tool-carrying turns
+  # off them (CLINE_NON_TOOL_TIERS).
   - model_name: local-coder-32b
     litellm_params:
       model: ollama_chat/qwen2.5-coder:32b
@@ -44,24 +55,30 @@ model_list:
 
   - model_name: claude-code
     # Default tier for the hybrid-auto router when it escalates to Claude.
-    # Pinned to Sonnet 5 -- higher per-hour request quota than Opus on the
-    # Team subscription token, which prevents rate-limit storms when Cline
-    # retries rapidly. Use claude-opus-4-8 directly for tasks that need it.
-    # Override per-turn with [haiku] or [opus] tags. Pricing per token
-    # in cost.db is computed from cost/pricing.py, NOT the values below;
-    # the input/output_cost_per_token fields here only affect LiteLLM's
-    # internal /spend bookkeeping and are kept in sync as a courtesy.
+    # Pinned to Haiku 4.5: verified 2026-07-02 that the Team subscription
+    # OAuth token is policy-limited on the raw /v1/messages API -- haiku
+    # returns 200s, while Sonnet 5 / Sonnet 4.6 / Opus 4.8 all return an
+    # instant generic 429 ("message": "Error", no retry-after, no
+    # anthropic-ratelimit-* headers) regardless of call rate or the
+    # oauth-2025-04-20 beta header. Zero non-haiku successes exist in the
+    # entire cost.db history. Sonnet/Opus/Fable escalation requires
+    # CLAUDE_AUTH_MODE=apikey with ANTHROPIC_API_KEY (pay-per-token).
+    # Override per-turn with [haiku] / [sonnet] / [opus] tags. Pricing per
+    # token in cost.db is computed from cost/pricing.py, NOT the values
+    # below; the input/output_cost_per_token fields here only affect
+    # LiteLLM's internal /spend bookkeeping and are kept in sync as a
+    # courtesy.
     #
     # Auth is handled by the claude_proxy subscription endpoint (port 4002).
     # CLAUDE_AUTH_MODE=subscription (default) uses the macOS keychain OAuth
     # token; CLAUDE_AUTH_MODE=apikey uses ANTHROPIC_API_KEY instead.
     #
     litellm_params:
-      model: anthropic/claude-sonnet-5
+      model: anthropic/claude-haiku-4-5
       api_base: http://127.0.0.1:4002/subscription
       api_key: not-needed
-      input_cost_per_token: 0.000002
-      output_cost_per_token: 0.000010
+      input_cost_per_token: 0.000001
+      output_cost_per_token: 0.000005
 
   # Per-tier Claude aliases. Targets for the inline override tags
   # ([haiku] / [sonnet] / [opus]) and for callers that want to pin
@@ -74,10 +91,15 @@ model_list:
       input_cost_per_token: 0.000001
       output_cost_per_token: 0.000005
 
+  # Sonnet/Opus/Fable are policy-blocked on the subscription OAuth token
+  # (instant generic 429 -- verified 2026-07-02), so these aliases route
+  # through claude-proxy's /apikey endpoint, which authenticates with the
+  # org API key from the macOS keychain (`anthropic-api-key`). Metered
+  # pay-per-token spend, tracked in cost.db / the dashboard.
   - model_name: claude-sonnet-5
     litellm_params:
       model: anthropic/claude-sonnet-5
-      api_base: http://127.0.0.1:4002/subscription
+      api_base: http://127.0.0.1:4002/apikey
       api_key: not-needed
       input_cost_per_token: 0.000002
       output_cost_per_token: 0.000010
@@ -85,10 +107,21 @@ model_list:
   - model_name: claude-opus-4-8
     litellm_params:
       model: anthropic/claude-opus-4-8
-      api_base: http://127.0.0.1:4002/subscription
+      api_base: http://127.0.0.1:4002/apikey
       api_key: not-needed
       input_cost_per_token: 0.000005
       output_cost_per_token: 0.000025
+
+  # Fable 5: thinking is always on and single requests on hard tasks can
+  # run many minutes -- Cline streams by default and claude-proxy's
+  # upstream timeout is 360s, which covers it.
+  - model_name: claude-fable-5
+    litellm_params:
+      model: anthropic/claude-fable-5
+      api_base: http://127.0.0.1:4002/apikey
+      api_key: not-needed
+      input_cost_per_token: 0.000010
+      output_cost_per_token: 0.000050
 
   - model_name: hybrid-auto
     # Magic alias: the size-based router rewrites `data["model"]` to one of
@@ -140,7 +173,7 @@ model_list:
   # / CLI / benches, keep using the short names (`local-agent`, etc.).
   - model_name: gpt-local-long
     litellm_params:
-      model: ollama/@@OLLAMA_TAG@@
+      model: ollama_chat/@@OLLAMA_TAG@@
       api_base: http://127.0.0.1:@@OLLAMA_PORT@@
       input_cost_per_token: 0.0
       output_cost_per_token: 0.0
@@ -172,11 +205,11 @@ model_list:
   - model_name: gpt-claude-code
     # Cursor-shaped mirror of `claude-code`. Same upstream model.
     litellm_params:
-      model: anthropic/claude-sonnet-5
+      model: anthropic/claude-haiku-4-5
       api_base: http://127.0.0.1:4002/subscription
       api_key: not-needed
-      input_cost_per_token: 0.000002
-      output_cost_per_token: 0.000010
+      input_cost_per_token: 0.000001
+      output_cost_per_token: 0.000005
 
   # Cursor-shaped mirrors of the per-tier Claude aliases.
   - model_name: gpt-claude-haiku-4-5
@@ -231,6 +264,15 @@ router_settings:
   # Using a local model avoids Anthropic-specific param bleed-through that
   # occurs when falling back to another Anthropic model (e.g. thinking params
   # auto-injected by LiteLLM for Sonnet/Opus but rejected by Haiku).
+  # Claude-tier fallbacks land on local-long: since the qwen3-coder-next
+  # import was recreated with the qwen3-coder RENDERER/PARSER (2026-07-02)
+  # and local-long moved to ollama_chat/, it's both the strongest local
+  # tier AND tool-native -- a rate-limited (429) claude-code turn carrying
+  # `tools` now degrades to structured tool_calls from the 80B model
+  # instead of stalling Cline with an unexecutable raw-JSON blob. (Router-
+  # level fallbacks bypass the pre-call hook's tool-native redirect, so
+  # the fallback target itself must be tool-native. qwen2.5-coder:32b was
+  # tried first and does NOT reliably emit the tool-call envelope.)
   fallbacks:
     - claude-code: ["local-long"]
     - claude-sonnet-5: ["local-long"]

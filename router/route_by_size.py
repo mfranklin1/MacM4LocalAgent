@@ -112,21 +112,116 @@ ENABLE_MULTI_TURN_TIGHTEN = _control_flag("OVERGEN_MULTI_TURN", "1")
 ENABLE_THINK_INJECTION = _control_flag("ROUTER_THINK_INJECTION", "1")
 
 # Tool-call routing. Cline executes ONLY native OpenAI `tool_calls`; it never
-# parses tool calls out of text. qwen3-coder-next (the local-long tier, on
-# Ollama's legacy /api/generate route) emits tool calls as raw JSON *text*
-# instead, which Cline can't execute -- the turn stalls showing the JSON blob.
-# So when a request carries `tools` but routing landed on a local tier that
-# can't emit parseable tool_calls, redirect it to a tool-native local tier
-# (llama3.1 on ollama_chat/, which Ollama's OpenAI-compat layer parses into
-# structured tool_calls). Set CLINE_TOOL_TIER="" to disable the redirect.
-TOOL_NATIVE_LOCAL_TIER = (os.environ.get("CLINE_TOOL_TIER") or _ENV.get("CLINE_TOOL_TIER", "local-agent")).strip()
+# parses tool calls out of text. When a request carries `tools` but routing
+# landed on a local tier whose model can't emit parseable tool_calls, redirect
+# it to a tool-native local tier. Set CLINE_TOOL_TIER="" to disable.
+#
+# History: local-long (qwen3-coder-next) was the non-tool-native tier until
+# 2026-07-02, when its Ollama import was recreated with the qwen3-coder
+# RENDERER/PARSER and moved to ollama_chat/ -- it is now BOTH the strongest
+# local tier and tool-native, so it became the redirect target instead of
+# the redirect source. The qwen2.5-coder tiers stay non-tool-native: the
+# model declares the `tools` capability but writes calls as raw JSON text
+# (0/2 in live tests) instead of the <tool_call> envelope Ollama parses.
+TOOL_NATIVE_LOCAL_TIER = (os.environ.get("CLINE_TOOL_TIER") or _ENV.get("CLINE_TOOL_TIER", "local-long")).strip()
 # Local tiers whose underlying model does NOT reliably emit parseable
-# tool_calls. Comma-separated aliases; qwen3-coder-next == local-long.
+# tool_calls. Comma-separated aliases.
 _NON_TOOL_NATIVE_LOCAL = {
     t.strip()
-    for t in (os.environ.get("CLINE_NON_TOOL_TIERS") or _ENV.get("CLINE_NON_TOOL_TIERS", "local-long")).split(",")
+    for t in (
+        os.environ.get("CLINE_NON_TOOL_TIERS")
+        or _ENV.get("CLINE_NON_TOOL_TIERS", "local-coder-14b,local-coder-32b")
+    ).split(",")
     if t.strip()
 }
+# Upstream model-id substrings known to fail tool-call emission regardless
+# of which alias or route served them (used by _is_tool_native_model for
+# post-hoc fallback annotation, where only the upstream id is available).
+_NON_TOOL_NATIVE_MODEL_SUBSTRINGS = ("qwen2.5-coder",)
+
+# What the `claude-code` alias resolves to upstream. MUST stay in sync with
+# the claude-code entry in config/litellm-config.yaml. Default is Haiku 4.5
+# -- the only model the Team subscription OAuth token is permitted to call
+# on the raw API (verified 2026-07-02; Sonnet/Opus policy-429). Controls
+# whether thinking-mode params are injected: Haiku 4.5 rejects adaptive
+# thinking and output_config.effort with a 400, so the injection guard must
+# see the UPSTREAM model, not the alias. The planned apikey escalation
+# setting will override this (env or detected.env) when claude-code is
+# repointed at sonnet/opus/fable.
+CLAUDE_CODE_UPSTREAM_MODEL = (
+    os.environ.get("CLAUDE_CODE_MODEL")
+    or _ENV.get("CLAUDE_CODE_MODEL", "claude-haiku-4-5")
+).strip()
+
+
+def _resolved_claude_model(model_name: str | None) -> str:
+    """Resolve a Claude-tier alias to its upstream model id for capability
+    checks. Only `claude-code` (and its gpt- mirror) is indirect; the
+    per-model aliases (claude-haiku-4-5, claude-sonnet-5, ...) already name
+    their upstream model."""
+    name = model_name or ""
+    canonical = name[len("gpt-"):] if name.startswith("gpt-") else name
+    if canonical == "claude-code":
+        return CLAUDE_CODE_UPSTREAM_MODEL
+    return name
+
+
+# ---- Claude escalation choice (Cline setting) --------------------------------
+# Cline sends `x-claude-escalation-model: haiku|sonnet|opus|fable` with each
+# request (a plain setting -- never a secret). When routing lands on the
+# claude-code tier (haiku on the subscription token), a non-haiku choice
+# escalates to the corresponding /apikey-backed alias -- IF claude-proxy
+# reports an Anthropic API key in the keychain. Without a key the choice
+# downgrades to haiku with a visible route_reason marker.
+_ESCALATION_HEADER = "x-claude-escalation-model"
+_ESCALATION_MODELS: dict[str, str] = {
+    "haiku": "claude-code",  # the subscription default tier itself
+    "sonnet": "claude-sonnet-5",
+    "opus": "claude-opus-4-8",
+    "fable": "claude-fable-5",
+}
+CLAUDE_PROXY_PORT = int(
+    os.environ.get("CLAUDE_PROXY_PORT") or _ENV.get("CLAUDE_PROXY_PORT", "4002")
+)
+_apikey_health_cache: dict[str, Any] = {"available": False, "expires_at": 0.0}
+_APIKEY_HEALTH_TTL = 30.0
+
+
+def _escalation_choice(data: dict[str, Any]) -> str:
+    """The validated escalation choice from the request headers.
+
+    LiteLLM exposes the original proxy request under
+    data["proxy_server_request"]["headers"] (lower-cased keys). Unknown or
+    absent values fall back to 'haiku' -- the always-safe default."""
+    try:
+        headers = (data.get("proxy_server_request") or {}).get("headers") or {}
+        raw = str(headers.get(_ESCALATION_HEADER, "")).strip().lower()
+    except Exception:
+        raw = ""
+    return raw if raw in _ESCALATION_MODELS else "haiku"
+
+
+async def _api_key_available() -> bool:
+    """Whether claude-proxy holds an Anthropic API key (keychain/env).
+
+    Reads /health with a short TTL cache so the per-request cost is nil.
+    Any error (proxy down, timeout) reads as 'no key' -- the downgrade
+    path is always safe."""
+    now = time.monotonic()
+    if now < _apikey_health_cache["expires_at"]:
+        return bool(_apikey_health_cache["available"])
+    available = False
+    try:
+        import httpx  # lazy: only needed on escalated turns
+
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            r = await client.get(f"http://127.0.0.1:{CLAUDE_PROXY_PORT}/health")
+            available = bool(r.json().get("api_key_available"))
+    except Exception:
+        available = False
+    _apikey_health_cache["available"] = available
+    _apikey_health_cache["expires_at"] = now + _APIKEY_HEALTH_TTL
+    return available
 
 # Thinking mode: stream a live reasoning trace into the harness (Cline)
 # for BOTH tiers. When on:
@@ -593,9 +688,10 @@ _MODEL_OVERRIDE_TAGS: dict[str, str] = {
     "haiku":  "claude-haiku-4-5",
     "sonnet": "claude-sonnet-5",
     "opus":   "claude-opus-4-8",
+    "fable":  "claude-fable-5",
 }
 _OVERRIDE_TAG_RE = re.compile(
-    r"^\s*\[(haiku|sonnet|opus)\]\s*",
+    r"^\s*\[(haiku|sonnet|opus|fable)\]\s*",
     re.IGNORECASE,
 )
 
@@ -668,12 +764,22 @@ _sticky_escalations: dict[str, tuple[float, str, int]] = {}
 
 
 def _extract_user_task(messages: Iterable[dict[str, Any]] | None) -> str | None:
-    """For Cline-shaped requests, return the text inside the FIRST
-    `<task>...</task>` envelope. None otherwise -- caller falls back
-    to legacy size-based routing.
+    """For Cline-shaped requests, return the user's task text.
+
+    Legacy Cline builds wrap the task in a `<task>...</task>` envelope;
+    the FIRST envelope found in any user message wins. Newer builds
+    (native tool-calling protocol, observed v4.x) drop the envelope and
+    send the task as the first user message's plain text -- fall back to
+    that, minus any trailing `<environment_details>` block so the task
+    fingerprint stays stable across turns of the same task (Cline
+    refreshes environment_details every turn).
+
+    Returns None when no user text is found -- caller falls back to
+    legacy size-based routing.
     """
     if not messages:
         return None
+    first_user_text: str | None = None
     for m in messages:
         if not isinstance(m, dict) or m.get("role") != "user":
             continue
@@ -687,7 +793,13 @@ def _extract_user_task(messages: Iterable[dict[str, Any]] | None) -> str | None:
         match = _CLINE_TASK_RE.search(c)
         if match:
             return match.group(1).strip()
-    return None
+        if first_user_text is None:
+            first_user_text = c
+    if first_user_text is None:
+        return None
+    # No-envelope protocol: the first user message IS the task.
+    task = first_user_text.split("<environment_details>", 1)[0].strip()
+    return task or None
 
 
 def _latest_tool_result_text(messages: Iterable[dict[str, Any]] | None) -> str:
@@ -1110,6 +1222,67 @@ def _model_to_tier(model: str) -> str:
     return "local-long"
 
 
+def _is_tool_native_model(model: str) -> bool:
+    """Whether the (alias- or upstream-shaped) model id reliably emits
+    structured `tool_calls`.
+
+    Claude tiers are always tool-native. Local tiers are tool-native only
+    when served through Ollama's OpenAI-compat layer (`ollama_chat/`
+    upstream ids); the legacy `ollama/` route bypasses tool parsing and
+    returns tool calls as raw JSON text. Alias names are checked against
+    _NON_TOOL_NATIVE_LOCAL, and upstream ids additionally against
+    _NON_TOOL_NATIVE_MODEL_SUBSTRINGS (models that declare the tools
+    capability but don't emit the envelope, e.g. qwen2.5-coder)."""
+    if _model_to_tier(model) == "claude":
+        return True
+    m_lower = model.lower()
+    if m_lower.startswith("ollama/"):
+        return False
+    if any(s in m_lower for s in _NON_TOOL_NATIVE_MODEL_SUBSTRINGS):
+        return False
+    canonical = model[len("gpt-"):] if model.startswith("gpt-") else model
+    return canonical not in _NON_TOOL_NATIVE_LOCAL
+
+
+def _annotate_router_fallback(
+    model: str,
+    route_decision: str | None,
+    tools_present: bool,
+    reason: str,
+) -> str:
+    """Append a loud marker to route_reason when LiteLLM's router-level
+    fallback moved the request off the tier the pre-call hook decided.
+
+    Router fallbacks (router_settings.fallbacks in the YAML) run AFTER
+    async_pre_call_hook, which only fires once per request -- so the
+    tool-native redirect cannot correct them. If a fallback lands a
+    tool-carrying request on a non-tool-native local model, the model
+    emits the tool call as raw JSON text and the harness (Cline) stalls
+    showing the blob. That failure was silent in the ledger until this
+    marker: the row kept the original route_reason and looked like a
+    normal local turn. Pure function -- unit-testable without LiteLLM."""
+    decision = (route_decision or "").strip()
+    if not decision:
+        return reason
+    decision_tier = _model_to_tier(decision)
+    served_tier = _model_to_tier(model)
+    if decision_tier == served_tier:
+        return reason
+    # The hook decided Claude but a local model served the response (or
+    # vice versa, which shouldn't happen): a router fallback fired.
+    marker = f"ROUTER-FALLBACK({decision}->{model})"
+    if tools_present and not _is_tool_native_model(model):
+        # The exact failure mode this exists to surface.
+        marker += " TOOLS-AS-TEXT-RISK"
+        print(
+            f"[router] WARNING: fallback landed a tool-carrying request on "
+            f"non-tool-native model {model!r} (decided: {decision!r}); the "
+            f"harness will see raw JSON instead of tool_calls",
+            file=sys.stderr,
+        )
+    return f"{reason} | {marker}" if reason else marker
+
+
 # ----- LiteLLM callback shim ------------------------------------------------
 #
 # LiteLLM looks for a class with `async_pre_call_hook` and/or `log_success_event`.
@@ -1142,15 +1315,17 @@ class SizeBasedRouter(_LiteLLMCustomLogger):
         native tool_calls onto the tool-native local tier.
 
         Cline (and any OpenAI-native harness) only executes structured
-        `tool_calls`; qwen3-coder-next (local-long) emits them as raw JSON
-        text, so the turn stalls. When the request carries `tools` and the
+        `tool_calls`; the qwen2.5-coder tiers emit them as raw JSON text,
+        so the turn stalls. When the request carries `tools` and the
         resolved model is a non-tool-native local tier, rewrite it to
-        TOOL_NATIVE_LOCAL_TIER (llama3.1 on ollama_chat/) and stamp the
-        reason so the redirect is visible in the monitor / cost ledger.
+        TOOL_NATIVE_LOCAL_TIER (default local-long: qwen3-coder-next via
+        ollama_chat/, tool-native since the 2026-07-02 template fix) and
+        stamp the reason so the redirect is visible in the monitor / cost
+        ledger.
 
         No-op when: the redirect is disabled, the turn carries no tools, the
         model is a Claude tier, or the local tier is already tool-native
-        (e.g. local-agent, local-coder-*). Never raises -- the caller's
+        (e.g. local-long, local-agent). Never raises -- the caller's
         try/except already guards the whole pre-call hook."""
         if not TOOL_NATIVE_LOCAL_TIER:
             return
@@ -1250,6 +1425,32 @@ class SizeBasedRouter(_LiteLLMCustomLogger):
                         # only as a preview on /tasks.
                         meta["task_text"] = task_text[:500]
 
+            # ---- Claude escalation choice (Cline setting) --------------
+            # Runs AFTER routing (so it sees the decided tier) and BEFORE
+            # the offline chokepoint (so an escalated model still gets the
+            # offline downgrade). Applies only when the decided tier is
+            # claude-code -- direct per-model selections and local tiers
+            # pass through untouched.
+            if data.get("model") == "claude-code":
+                choice = _escalation_choice(data)
+                if choice != "haiku":
+                    meta = data.setdefault("metadata", {})
+                    base_reason = meta.get("route_reason") or "claude"
+                    if await _api_key_available():
+                        target = _ESCALATION_MODELS[choice]
+                        data["model"] = target
+                        meta["route_decision"] = target
+                        meta["route_reason"] = (
+                            f"{base_reason} | escalation[{choice}]->{target}"
+                        )
+                    else:
+                        # Stay on claude-code (haiku/subscription), but say
+                        # why in the ledger/monitor.
+                        meta["route_reason"] = (
+                            f"{base_reason} | escalation[{choice}] "
+                            "no-apikey-downgrade->haiku"
+                        )
+
             # Offline-mode chokepoint. Runs AFTER routing so it catches
             # both `hybrid-auto`-driven Claude decisions AND direct
             # claude-* model selections that never went through
@@ -1339,12 +1540,16 @@ class SizeBasedRouter(_LiteLLMCustomLogger):
                     meta["qwen3_think_injected"] = True
 
             # Adaptive thinking is unsupported on Haiku tiers, so skip them
-            # (injecting it 400s). Opus/Sonnet 4.6+ and the default
-            # claude-code (Opus) tier all accept it.
+            # (injecting it 400s: Haiku 4.5 rejects thinking.type=adaptive
+            # AND output_config.effort). The check must resolve aliases to
+            # their upstream model -- `claude-code` currently maps to
+            # claude-haiku-4-5 (subscription policy limit), so checking the
+            # alias string alone would inject thinking and 400 every
+            # escalated turn.
             if (
                 ENABLE_THINKING_MODE
                 and _is_claude_model_name(model_name)
-                and "haiku" not in (model_name or "").lower()
+                and "haiku" not in _resolved_claude_model(model_name).lower()
             ):
                 apply_claude_thinking_params(data, effort=_thinking_effort())
                 meta = data.setdefault("metadata", {})
@@ -1551,6 +1756,26 @@ class SizeBasedRouter(_LiteLLMCustomLogger):
             nested_meta.get("route_reason")
             or top_meta.get("route_reason")
             or ""
+        )
+        # Surface router-level fallbacks in the ledger. The pre-call hook
+        # stamped route_decision with the tier it chose; if the model that
+        # actually served the response maps to a different tier, LiteLLM's
+        # fallback chain fired (e.g. claude-code 429 -> local fallback) --
+        # and if the request carried tools while the fallback target can't
+        # emit structured tool_calls, that's the tools-as-text stall.
+        # `tools` lives in different kwargs slots depending on the LiteLLM
+        # lifecycle path, so check each known location.
+        route_decision = nested_meta.get("route_decision") or top_meta.get(
+            "route_decision"
+        )
+        optional_params = kwargs.get("optional_params") or {}
+        tools_present = bool(
+            kwargs.get("tools")
+            or optional_params.get("tools")
+            or (litellm_params.get("optional_params") or {}).get("tools")
+        )
+        reason = _annotate_router_fallback(
+            model, route_decision, tools_present, reason
         )
         # task_id / task_text are only set for Cline traffic; both
         # NULL otherwise. SQLite stores NULL natively for None bindings.
