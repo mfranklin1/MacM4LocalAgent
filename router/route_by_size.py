@@ -165,6 +165,64 @@ def _resolved_claude_model(model_name: str | None) -> str:
         return CLAUDE_CODE_UPSTREAM_MODEL
     return name
 
+
+# ---- Claude escalation choice (Cline setting) --------------------------------
+# Cline sends `x-claude-escalation-model: haiku|sonnet|opus|fable` with each
+# request (a plain setting -- never a secret). When routing lands on the
+# claude-code tier (haiku on the subscription token), a non-haiku choice
+# escalates to the corresponding /apikey-backed alias -- IF claude-proxy
+# reports an Anthropic API key in the keychain. Without a key the choice
+# downgrades to haiku with a visible route_reason marker.
+_ESCALATION_HEADER = "x-claude-escalation-model"
+_ESCALATION_MODELS: dict[str, str] = {
+    "haiku": "claude-code",  # the subscription default tier itself
+    "sonnet": "claude-sonnet-5",
+    "opus": "claude-opus-4-8",
+    "fable": "claude-fable-5",
+}
+CLAUDE_PROXY_PORT = int(
+    os.environ.get("CLAUDE_PROXY_PORT") or _ENV.get("CLAUDE_PROXY_PORT", "4002")
+)
+_apikey_health_cache: dict[str, Any] = {"available": False, "expires_at": 0.0}
+_APIKEY_HEALTH_TTL = 30.0
+
+
+def _escalation_choice(data: dict[str, Any]) -> str:
+    """The validated escalation choice from the request headers.
+
+    LiteLLM exposes the original proxy request under
+    data["proxy_server_request"]["headers"] (lower-cased keys). Unknown or
+    absent values fall back to 'haiku' -- the always-safe default."""
+    try:
+        headers = (data.get("proxy_server_request") or {}).get("headers") or {}
+        raw = str(headers.get(_ESCALATION_HEADER, "")).strip().lower()
+    except Exception:
+        raw = ""
+    return raw if raw in _ESCALATION_MODELS else "haiku"
+
+
+async def _api_key_available() -> bool:
+    """Whether claude-proxy holds an Anthropic API key (keychain/env).
+
+    Reads /health with a short TTL cache so the per-request cost is nil.
+    Any error (proxy down, timeout) reads as 'no key' -- the downgrade
+    path is always safe."""
+    now = time.monotonic()
+    if now < _apikey_health_cache["expires_at"]:
+        return bool(_apikey_health_cache["available"])
+    available = False
+    try:
+        import httpx  # lazy: only needed on escalated turns
+
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            r = await client.get(f"http://127.0.0.1:{CLAUDE_PROXY_PORT}/health")
+            available = bool(r.json().get("api_key_available"))
+    except Exception:
+        available = False
+    _apikey_health_cache["available"] = available
+    _apikey_health_cache["expires_at"] = now + _APIKEY_HEALTH_TTL
+    return available
+
 # Thinking mode: stream a live reasoning trace into the harness (Cline)
 # for BOTH tiers. When on:
 #   - Qwen3 local tiers get /think injected on every turn (so the model
@@ -630,9 +688,10 @@ _MODEL_OVERRIDE_TAGS: dict[str, str] = {
     "haiku":  "claude-haiku-4-5",
     "sonnet": "claude-sonnet-5",
     "opus":   "claude-opus-4-8",
+    "fable":  "claude-fable-5",
 }
 _OVERRIDE_TAG_RE = re.compile(
-    r"^\s*\[(haiku|sonnet|opus)\]\s*",
+    r"^\s*\[(haiku|sonnet|opus|fable)\]\s*",
     re.IGNORECASE,
 )
 
@@ -1365,6 +1424,32 @@ class SizeBasedRouter(_LiteLLMCustomLogger):
                         # full task text is never displayed in full,
                         # only as a preview on /tasks.
                         meta["task_text"] = task_text[:500]
+
+            # ---- Claude escalation choice (Cline setting) --------------
+            # Runs AFTER routing (so it sees the decided tier) and BEFORE
+            # the offline chokepoint (so an escalated model still gets the
+            # offline downgrade). Applies only when the decided tier is
+            # claude-code -- direct per-model selections and local tiers
+            # pass through untouched.
+            if data.get("model") == "claude-code":
+                choice = _escalation_choice(data)
+                if choice != "haiku":
+                    meta = data.setdefault("metadata", {})
+                    base_reason = meta.get("route_reason") or "claude"
+                    if await _api_key_available():
+                        target = _ESCALATION_MODELS[choice]
+                        data["model"] = target
+                        meta["route_decision"] = target
+                        meta["route_reason"] = (
+                            f"{base_reason} | escalation[{choice}]->{target}"
+                        )
+                    else:
+                        # Stay on claude-code (haiku/subscription), but say
+                        # why in the ledger/monitor.
+                        meta["route_reason"] = (
+                            f"{base_reason} | escalation[{choice}] "
+                            "no-apikey-downgrade->haiku"
+                        )
 
             # Offline-mode chokepoint. Runs AFTER routing so it catches
             # both `hybrid-auto`-driven Claude decisions AND direct

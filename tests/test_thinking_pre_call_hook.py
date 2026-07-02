@@ -62,7 +62,7 @@ def test_pre_call_enables_claude_thinking(monkeypatch: Any) -> None:
     out = _run(_router(), data)
     assert out["thinking"] == {"type": "adaptive"}
     assert out["output_config"]["effort"] in {"low", "medium", "high", "xhigh", "max"}
-    assert out["temperature"] == 1
+    assert "temperature" not in out  # sampling params stripped (400 on Opus 4.7+)
     assert "top_p" not in out
     assert out["metadata"]["claude_thinking_enabled"] is True
 

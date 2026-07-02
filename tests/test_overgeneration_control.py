@@ -647,7 +647,9 @@ def test_apply_claude_thinking_params_sets_adaptive_block_and_sampling() -> None
     # Adaptive form (legacy {"type":"enabled","budget_tokens"} 400s on Opus 4.7+).
     assert data["thinking"] == {"type": "adaptive"}
     assert data["output_config"] == {"effort": "high"}
-    assert data["temperature"] == 1
+    # Sampling params are STRIPPED, not forced to 1 -- Opus 4.7/4.8 and
+    # Fable 5 reject any temperature/top_p/top_k with a 400.
+    assert "temperature" not in data
     assert "top_p" not in data
     assert "top_k" not in data
     # max_tokens floored so a tiny inbound cap can't starve the trace.
