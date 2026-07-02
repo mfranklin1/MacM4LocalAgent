@@ -49,6 +49,7 @@ LITELLM_PORT.  Live env vars always win over detected.env values.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import logging
 import os
@@ -544,6 +545,33 @@ async def messages_ping() -> JSONResponse:
 #   CLAUDE_AUTH_MODE=subscription  →  OAuth token from macOS keychain (default)
 #   CLAUDE_AUTH_MODE=apikey        →  ANTHROPIC_API_KEY env var
 
+# ── 429 retry policy ─────────────────────────────────────────────────────────
+# The subscription token shares a per-hour quota with every other Claude
+# consumer on the account, so transient 429s are routine. Before this
+# backoff, a single 429 (after LiteLLM's one immediate retry) tripped
+# LiteLLM's claude->local fallback and dumped 70K+-token complex tasks
+# onto a local model. Bounded exponential backoff -- honoring a numeric
+# Retry-After when Anthropic sends one -- rides out the quota window
+# instead. Worst-case added latency with defaults: 2+4+8 = 14s.
+RETRY_429_ATTEMPTS = int(os.environ.get("CLAUDE_PROXY_429_RETRIES", "3"))
+RETRY_429_BASE_DELAY = float(os.environ.get("CLAUDE_PROXY_429_BASE_DELAY", "2.0"))
+RETRY_429_MAX_DELAY = float(os.environ.get("CLAUDE_PROXY_429_MAX_DELAY", "30.0"))
+
+
+def _retry_delay(attempt: int, retry_after: str | None) -> float:
+    """Seconds to wait before retry number `attempt` (0-based).
+
+    A parseable numeric Retry-After header wins (clamped to the cap);
+    the HTTP-date form falls through to exponential backoff.
+    """
+    if retry_after:
+        try:
+            return min(max(float(retry_after), 0.0), RETRY_429_MAX_DELAY)
+        except ValueError:
+            pass
+    return min(RETRY_429_BASE_DELAY * (2 ** attempt), RETRY_429_MAX_DELAY)
+
+
 def _build_subscription_headers(request: Request) -> dict[str, str]:
     """Build auth headers for the LiteLLM → Anthropic path."""
     headers: dict[str, str] = {}
@@ -591,32 +619,60 @@ async def subscription_messages(request: Request) -> Response:
 
     timeout = httpx.Timeout(360.0, connect=10.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
-        if is_stream:
-            async with client.stream(
-                "POST",
-                f"{ANTHROPIC_BASE}/v1/messages",
-                content=body,
-                headers=upstream_headers,
-            ) as resp:
-                if resp.status_code != 200:
-                    body_bytes = await resp.aread()
-                    return Response(content=body_bytes, status_code=resp.status_code,
-                                    media_type="application/json")
+        # Retry loop: only 429s are retried (with backoff); every other
+        # status -- success or failure -- returns on the first pass.
+        # The final attempt returns the 429 to LiteLLM so its fallback
+        # chain still engages once the backoff budget is exhausted.
+        for attempt in range(RETRY_429_ATTEMPTS + 1):
+            delay = 0.0
+            if is_stream:
+                async with client.stream(
+                    "POST",
+                    f"{ANTHROPIC_BASE}/v1/messages",
+                    content=body,
+                    headers=upstream_headers,
+                ) as resp:
+                    if resp.status_code == 429 and attempt < RETRY_429_ATTEMPTS:
+                        delay = _retry_delay(attempt, resp.headers.get("retry-after"))
+                        await resp.aread()  # drain before closing
+                        log.warning(
+                            "subscription 429 (stream); retry %d/%d in %.1fs",
+                            attempt + 1, RETRY_429_ATTEMPTS, delay,
+                        )
+                    elif resp.status_code != 200:
+                        body_bytes = await resp.aread()
+                        return Response(content=body_bytes, status_code=resp.status_code,
+                                        media_type="application/json")
+                    else:
+                        # Bind resp explicitly: _gen is defined inside the
+                        # retry loop, and a closure over the loop variable
+                        # would see whatever resp is when iterated (B023).
+                        async def _gen(resp: httpx.Response = resp) -> AsyncIterator[bytes]:
+                            async for chunk in _passthrough_stream(resp):
+                                yield chunk
 
-                async def _gen() -> AsyncIterator[bytes]:
-                    async for chunk in _passthrough_stream(resp):
-                        yield chunk
-
-                return StreamingResponse(_gen(), media_type="text/event-stream",
-                                         status_code=resp.status_code)
-        else:
-            resp = await client.post(
-                f"{ANTHROPIC_BASE}/v1/messages",
-                content=body,
-                headers=upstream_headers,
-            )
-            return Response(content=resp.content, status_code=resp.status_code,
-                            media_type="application/json")
+                        return StreamingResponse(_gen(), media_type="text/event-stream",
+                                                 status_code=resp.status_code)
+                await asyncio.sleep(delay)
+            else:
+                resp = await client.post(
+                    f"{ANTHROPIC_BASE}/v1/messages",
+                    content=body,
+                    headers=upstream_headers,
+                )
+                if resp.status_code == 429 and attempt < RETRY_429_ATTEMPTS:
+                    delay = _retry_delay(attempt, resp.headers.get("retry-after"))
+                    log.warning(
+                        "subscription 429; retry %d/%d in %.1fs",
+                        attempt + 1, RETRY_429_ATTEMPTS, delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                return Response(content=resp.content, status_code=resp.status_code,
+                                media_type="application/json")
+        # Unreachable: the loop always returns on its final attempt
+        # (attempt == RETRY_429_ATTEMPTS disables the retry branch).
+        raise AssertionError("subscription retry loop exited without returning")
 
 
 @app.get("/subscription/v1/messages")

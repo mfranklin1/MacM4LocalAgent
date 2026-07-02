@@ -668,12 +668,22 @@ _sticky_escalations: dict[str, tuple[float, str, int]] = {}
 
 
 def _extract_user_task(messages: Iterable[dict[str, Any]] | None) -> str | None:
-    """For Cline-shaped requests, return the text inside the FIRST
-    `<task>...</task>` envelope. None otherwise -- caller falls back
-    to legacy size-based routing.
+    """For Cline-shaped requests, return the user's task text.
+
+    Legacy Cline builds wrap the task in a `<task>...</task>` envelope;
+    the FIRST envelope found in any user message wins. Newer builds
+    (native tool-calling protocol, observed v4.x) drop the envelope and
+    send the task as the first user message's plain text -- fall back to
+    that, minus any trailing `<environment_details>` block so the task
+    fingerprint stays stable across turns of the same task (Cline
+    refreshes environment_details every turn).
+
+    Returns None when no user text is found -- caller falls back to
+    legacy size-based routing.
     """
     if not messages:
         return None
+    first_user_text: str | None = None
     for m in messages:
         if not isinstance(m, dict) or m.get("role") != "user":
             continue
@@ -687,7 +697,13 @@ def _extract_user_task(messages: Iterable[dict[str, Any]] | None) -> str | None:
         match = _CLINE_TASK_RE.search(c)
         if match:
             return match.group(1).strip()
-    return None
+        if first_user_text is None:
+            first_user_text = c
+    if first_user_text is None:
+        return None
+    # No-envelope protocol: the first user message IS the task.
+    task = first_user_text.split("<environment_details>", 1)[0].strip()
+    return task or None
 
 
 def _latest_tool_result_text(messages: Iterable[dict[str, Any]] | None) -> str:
@@ -1108,6 +1124,63 @@ def _model_to_tier(model: str) -> str:
     if "claude" in m_lower or "anthropic" in m_lower:
         return "claude"
     return "local-long"
+
+
+def _is_tool_native_model(model: str) -> bool:
+    """Whether the (alias- or upstream-shaped) model id reliably emits
+    structured `tool_calls`.
+
+    Claude tiers are always tool-native. Local tiers are tool-native only
+    when served through Ollama's OpenAI-compat layer (`ollama_chat/`
+    upstream ids); the legacy `ollama/` route returns tool calls as raw
+    JSON text. Alias names are checked against _NON_TOOL_NATIVE_LOCAL
+    (default: local-long == qwen3-coder-next on the legacy route)."""
+    if _model_to_tier(model) == "claude":
+        return True
+    m_lower = model.lower()
+    if m_lower.startswith("ollama/"):
+        return False
+    canonical = model[len("gpt-"):] if model.startswith("gpt-") else model
+    return canonical not in _NON_TOOL_NATIVE_LOCAL
+
+
+def _annotate_router_fallback(
+    model: str,
+    route_decision: str | None,
+    tools_present: bool,
+    reason: str,
+) -> str:
+    """Append a loud marker to route_reason when LiteLLM's router-level
+    fallback moved the request off the tier the pre-call hook decided.
+
+    Router fallbacks (router_settings.fallbacks in the YAML) run AFTER
+    async_pre_call_hook, which only fires once per request -- so the
+    tool-native redirect cannot correct them. If a fallback lands a
+    tool-carrying request on a non-tool-native local model, the model
+    emits the tool call as raw JSON text and the harness (Cline) stalls
+    showing the blob. That failure was silent in the ledger until this
+    marker: the row kept the original route_reason and looked like a
+    normal local turn. Pure function -- unit-testable without LiteLLM."""
+    decision = (route_decision or "").strip()
+    if not decision:
+        return reason
+    decision_tier = _model_to_tier(decision)
+    served_tier = _model_to_tier(model)
+    if decision_tier == served_tier:
+        return reason
+    # The hook decided Claude but a local model served the response (or
+    # vice versa, which shouldn't happen): a router fallback fired.
+    marker = f"ROUTER-FALLBACK({decision}->{model})"
+    if tools_present and not _is_tool_native_model(model):
+        # The exact failure mode this exists to surface.
+        marker += " TOOLS-AS-TEXT-RISK"
+        print(
+            f"[router] WARNING: fallback landed a tool-carrying request on "
+            f"non-tool-native model {model!r} (decided: {decision!r}); the "
+            f"harness will see raw JSON instead of tool_calls",
+            file=sys.stderr,
+        )
+    return f"{reason} | {marker}" if reason else marker
 
 
 # ----- LiteLLM callback shim ------------------------------------------------
@@ -1551,6 +1624,26 @@ class SizeBasedRouter(_LiteLLMCustomLogger):
             nested_meta.get("route_reason")
             or top_meta.get("route_reason")
             or ""
+        )
+        # Surface router-level fallbacks in the ledger. The pre-call hook
+        # stamped route_decision with the tier it chose; if the model that
+        # actually served the response maps to a different tier, LiteLLM's
+        # fallback chain fired (e.g. claude-code 429 -> local fallback) --
+        # and if the request carried tools while the fallback target can't
+        # emit structured tool_calls, that's the tools-as-text stall.
+        # `tools` lives in different kwargs slots depending on the LiteLLM
+        # lifecycle path, so check each known location.
+        route_decision = nested_meta.get("route_decision") or top_meta.get(
+            "route_decision"
+        )
+        optional_params = kwargs.get("optional_params") or {}
+        tools_present = bool(
+            kwargs.get("tools")
+            or optional_params.get("tools")
+            or (litellm_params.get("optional_params") or {}).get("tools")
+        )
+        reason = _annotate_router_fallback(
+            model, route_decision, tools_present, reason
         )
         # task_id / task_text are only set for Cline traffic; both
         # NULL otherwise. SQLite stores NULL natively for None bindings.

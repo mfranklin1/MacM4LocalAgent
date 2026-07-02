@@ -41,6 +41,16 @@ model_list:
       api_base: http://127.0.0.1:@@OLLAMA_PORT@@
       input_cost_per_token: 0.0
       output_cost_per_token: 0.0
+      # local-coder-32b doubles as the Claude-tier fallback (see
+      # router_settings.fallbacks): tool-native via ollama_chat/, so a
+      # rate-limited claude-code turn that carries `tools` still produces
+      # structured tool_calls instead of raw JSON text. Needs the full
+      # window -- fallback prompts arrive at claude-code size (72K+ seen
+      # in practice), and Ollama's Modelfile default would silently
+      # truncate them.
+      extra_body:
+        options:
+          num_ctx: @@LOCAL_LONG_CTX@@
 
   - model_name: claude-code
     # Default tier for the hybrid-auto router when it escalates to Claude.
@@ -168,6 +178,11 @@ model_list:
       api_base: http://127.0.0.1:@@OLLAMA_PORT@@
       input_cost_per_token: 0.0
       output_cost_per_token: 0.0
+      # Mirror of local-coder-32b -- same fallback role for the gpt-*
+      # Claude aliases, same full-window requirement.
+      extra_body:
+        options:
+          num_ctx: @@LOCAL_LONG_CTX@@
 
   - model_name: gpt-claude-code
     # Cursor-shaped mirror of `claude-code`. Same upstream model.
@@ -231,13 +246,21 @@ router_settings:
   # Using a local model avoids Anthropic-specific param bleed-through that
   # occurs when falling back to another Anthropic model (e.g. thinking params
   # auto-injected by LiteLLM for Sonnet/Opus but rejected by Haiku).
+  # Claude-tier fallbacks land on local-coder-32b, NOT local-long:
+  # qwen3-coder-next (local-long) emits tool calls as raw JSON text on the
+  # legacy ollama/ route, and router-level fallbacks bypass the pre-call
+  # hook's tool-native redirect entirely -- so a rate-limited (429)
+  # claude-code turn carrying `tools` used to stall Cline with an
+  # unexecutable JSON blob. qwen2.5-coder:32b on ollama_chat/ is
+  # tool-native and the strongest local tier for the complex tasks that
+  # get routed to Claude in the first place.
   fallbacks:
-    - claude-code: ["local-long"]
-    - claude-sonnet-5: ["local-long"]
-    - claude-opus-4-8: ["local-long"]
-    - gpt-claude-code: ["gpt-local-long"]
-    - gpt-claude-sonnet-5: ["gpt-local-long"]
-    - gpt-claude-opus-4-8: ["gpt-local-long"]
+    - claude-code: ["local-coder-32b"]
+    - claude-sonnet-5: ["local-coder-32b"]
+    - claude-opus-4-8: ["local-coder-32b"]
+    - gpt-claude-code: ["gpt-local-coder-32b"]
+    - gpt-claude-sonnet-5: ["gpt-local-coder-32b"]
+    - gpt-claude-opus-4-8: ["gpt-local-coder-32b"]
 
 # No general_settings.master_key by design.
 #
